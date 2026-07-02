@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import "@fontsource-variable/fraunces";
 import "@fontsource-variable/public-sans";
 import "./globals.css";
+import { ClerkProvider } from "@clerk/nextjs";
 import { ConvexClientProvider } from "@/components/convex-client-provider";
 
 export const metadata: Metadata = {
@@ -19,7 +20,9 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
       <body className="relative min-h-dvh">
-        <ConvexClientProvider>{children}</ConvexClientProvider>
+        <ClerkProvider>
+          <ConvexClientProvider>{children}</ConvexClientProvider>
+        </ClerkProvider>
       </body>
     </html>
   );

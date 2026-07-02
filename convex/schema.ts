@@ -1,13 +1,11 @@
 import { defineSchema, defineTable } from "convex/server";
-import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
 /**
  * Schema per project spec Section 4 — field names/types are exact, do not modify.
  *
- * The only additions are the Convex Auth tables (`authTables`) and the
- * optional fields Convex Auth manages on `users` (email, phone, etc.).
- * These are required by the auth library, not an invented scope change.
+ * Clerk owns authentication. The app keeps profile rows for usernames, roles,
+ * status, presence, and chat relationships.
  *
  * FLAGGED DEVIATION (indexes only, no field changes) — Section 4's own rule
  * ("every query must use an index, no unindexed full scans") is impossible to
@@ -15,14 +13,13 @@ import { v } from "convex/values";
  *   - messages.by_sender        → global 20-msgs/10s rate limit (Section 8)
  *   - conversationReads.by_user → listConversations for the current user
  * Field names/types are untouched. See README "Spec deviations".
- * NOTE: `email` stores the lowercase real email address used as the auth
- * account identifier by Convex Auth's Password provider.
+ * NOTE: `tokenIdentifier` is Convex's stable Clerk identity key for auth-linked
+ * lookups.
  */
 export default defineSchema({
-  ...authTables,
-
   users: defineTable({
     // --- Spec fields (Section 4) ---
+    tokenIdentifier: v.string(),
     username: v.string(),
     usernameLower: v.string(),
     role: v.union(v.literal("user"), v.literal("admin")),
@@ -32,18 +29,14 @@ export default defineSchema({
       v.literal("suspended"),
     ),
     lastActiveAt: v.optional(v.number()),
-    // --- Convex Auth managed fields (all optional, library requirement) ---
+    // --- Clerk profile fields mirrored for display/admin context ---
     name: v.optional(v.string()),
     image: v.optional(v.string()),
     email: v.optional(v.string()),
-    emailVerificationTime: v.optional(v.number()),
-    phone: v.optional(v.string()),
-    phoneVerificationTime: v.optional(v.number()),
-    isAnonymous: v.optional(v.boolean()),
   })
+    .index("by_tokenIdentifier", ["tokenIdentifier"])
     .index("by_usernameLower", ["usernameLower"])
-    .index("email", ["email"])
-    .index("phone", ["phone"]),
+    .index("by_email", ["email"]),
 
   conversations: defineTable({
     participantIds: v.array(v.id("users")),

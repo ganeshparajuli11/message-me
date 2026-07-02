@@ -1,7 +1,7 @@
 "use client";
 
 import { api } from "../../convex/_generated/api";
-import { SignIn } from "@/components/auth/sign-in";
+import { SetupProfile, SignIn } from "@/components/auth/sign-in";
 import { ChatApp } from "@/components/chat/chat-app";
 import { useConvexAuth, useQuery } from "convex/react";
 import { Loader2 } from "lucide-react";
@@ -18,8 +18,12 @@ export default function Home() {
     );
   }
 
-  if (!isAuthenticated || me === null || me === undefined) {
+  if (!isAuthenticated) {
     return <SignIn />;
+  }
+
+  if (me === null || me === undefined) {
+    return <SetupProfile />;
   }
 
   return <ChatApp me={me} />;

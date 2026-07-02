@@ -1,81 +1,38 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import type { UserIdentity } from "convex/server";
 import { mutation, query } from "./_generated/server";
 import { publicUser, requireUser } from "./lib/helpers";
-import { USERNAME_MAX, validateUsernameFormat } from "./lib/validation";
 
-const SUGGESTION_WORD_POOL = [
-  "sky",
-  "ink",
-  "moss",
-  "clay",
-  "note",
-  "echo",
-  "wren",
-  "fern",
-];
+function normalizeUsernameCandidate(input: string): string {
+  const cleaned = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (cleaned.length >= 3) return cleaned.slice(0, 20);
+  return "user";
+}
 
-/**
- * Live username availability check + deterministic suggestions (no AI call).
- * Suggestions: number suffixes, underscore variants, word-prefix pool —
- * checked against the DB via by_usernameLower, capped at 4. (Spec Section 5.)
- *
- * Public query (runs pre-auth during signup) — returns no user data, only
- * availability booleans.
- */
-export const checkUsernameAndSuggest = query({
-  args: { username: v.string() },
-  handler: async (ctx, args) => {
-    const username = args.username.trim();
-    const format = validateUsernameFormat(username);
-    if (!format.valid) {
-      return {
-        valid: false,
-        available: false,
-        error: format.error,
-        suggestions: [] as string[],
-      };
-    }
-    const lower = username.toLowerCase();
+function baseUsernameFromIdentity(identity: UserIdentity): string {
+  const direct =
+    identity.preferredUsername ?? identity.nickname ?? identity["username"];
+  if (typeof direct === "string" && direct.trim().length > 0) {
+    return normalizeUsernameCandidate(direct);
+  }
 
-    const isTaken = async (candidateLower: string) => {
-      const existing = await ctx.db
-        .query("users")
-        .withIndex("by_usernameLower", (q) =>
-          q.eq("usernameLower", candidateLower),
-        )
-        .first();
-      return existing !== null;
-    };
+  if (typeof identity.email === "string" && identity.email.includes("@")) {
+    return normalizeUsernameCandidate(identity.email.split("@")[0] ?? "user");
+  }
 
-    const available = !(await isTaken(lower));
-    if (available) {
-      return { valid: true, available: true, suggestions: [] as string[] };
-    }
+  if (typeof identity.name === "string" && identity.name.trim().length > 0) {
+    return normalizeUsernameCandidate(identity.name);
+  }
 
-    // Deterministic candidate generation, then DB-checked, capped at 4.
-    const candidates: string[] = [];
-    for (const n of [1, 2, 7, 9, 42, 99]) {
-      candidates.push(`${username}${n}`);
-    }
-    candidates.push(`${username}_`, `_${username}`, `${username}_1`);
-    for (const w of SUGGESTION_WORD_POOL) {
-      candidates.push(`${w}_${username}`, `${username}_${w}`);
-    }
+  return normalizeUsernameCandidate(identity.subject);
+}
 
-    const suggestions: string[] = [];
-    for (const c of candidates) {
-      if (suggestions.length >= 4) break;
-      if (c.length > USERNAME_MAX) continue;
-      if (!validateUsernameFormat(c).valid) continue;
-      if (!(await isTaken(c.toLowerCase()))) {
-        suggestions.push(c);
-      }
-    }
-    return { valid: true, available: false, suggestions };
-  },
-});
-
-/** Current signed-in user (or null) — used by the app shell. */
+/** Current signed-in user, or null when unauthenticated or not onboarded. */
 export const currentUser = query({
   args: {},
   handler: async (ctx) => {
@@ -88,11 +45,77 @@ export const currentUser = query({
   },
 });
 
-/**
- * Presence heartbeat — client pings every ~30s while the app is open.
- * Online = lastActiveAt within PRESENCE_ONLINE_WINDOW_MS; otherwise the
- * timestamp doubles as "last seen".
- */
+/** Create the app profile row for a Clerk-authenticated user. */
+export const createCurrentUser = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) {
+      throw new ConvexError("Not authenticated");
+    }
+
+    const existing = await ctx.db
+      .query("users")
+      .withIndex("by_tokenIdentifier", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
+      .unique();
+    if (existing !== null) {
+      return { ...publicUser(existing), role: existing.role };
+    }
+
+    const base = baseUsernameFromIdentity(identity);
+    let username = base;
+    let usernameLower = username.toLowerCase();
+    let suffix = 1;
+    while (true) {
+      const clash = await ctx.db
+        .query("users")
+        .withIndex("by_usernameLower", (q) => q.eq("usernameLower", usernameLower))
+        .first();
+      if (clash === null) break;
+      suffix += 1;
+      const suffixStr = String(suffix);
+      const maxBaseLen = Math.max(3, 20 - suffixStr.length);
+      username = `${base.slice(0, maxBaseLen)}${suffixStr}`;
+      usernameLower = username.toLowerCase();
+      if (suffix > 9999) {
+        throw new ConvexError("Could not allocate unique username");
+      }
+    }
+
+    const profile: {
+      tokenIdentifier: string;
+      username: string;
+      usernameLower: string;
+      role: "user";
+      status: "active";
+      lastActiveAt: number;
+      name?: string;
+      image?: string;
+      email?: string;
+    } = {
+      tokenIdentifier: identity.tokenIdentifier,
+      username,
+      usernameLower,
+      role: "user",
+      status: "active",
+      lastActiveAt: Date.now(),
+    };
+    if (identity.name !== undefined) profile.name = identity.name;
+    if (identity.pictureUrl !== undefined) profile.image = identity.pictureUrl;
+    if (identity.email !== undefined) profile.email = identity.email;
+
+    const userId = await ctx.db.insert("users", profile);
+    const user = await ctx.db.get(userId);
+    if (user === null) {
+      throw new ConvexError("Could not create profile");
+    }
+    return { ...publicUser(user), role: user.role };
+  },
+});
+
+/** Presence heartbeat while the app is open. */
 export const heartbeat = mutation({
   args: {},
   handler: async (ctx) => {
@@ -115,25 +138,5 @@ export const getUserByUsername = query({
       return null;
     }
     return publicUser(user);
-  },
-});
-
-/**
- * Resolve a login identifier (username or email) to the auth email identifier
- * used by Convex Auth's Password provider.
- */
-export const resolveLoginEmail = query({
-  args: { identifier: v.string() },
-  handler: async (ctx, args) => {
-    const raw = args.identifier.trim().toLowerCase();
-    if (raw.length === 0) return null;
-    if (raw.includes("@")) return raw;
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_usernameLower", (q) => q.eq("usernameLower", raw))
-      .first();
-    if (user === null) return null;
-    return user.email ?? null;
   },
 });

@@ -42,3 +42,9 @@ next-env.d.ts
 
 # keep env templates
 !.env.local.example
+
+# clerk configuration (can include secrets)
+/.clerk/
+
+.vercel
+.env*

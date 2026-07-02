@@ -1,6 +1,5 @@
 {
-  /* Convex functions run in an isolated environment; this config follows the
-     Convex + Convex Auth manual-setup guidance. */
+  /* Convex functions run in an isolated environment. */
   "compilerOptions": {
     "allowJs": true,
     "strict": true,

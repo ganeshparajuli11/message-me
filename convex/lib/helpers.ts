@@ -1,4 +1,3 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
@@ -12,13 +11,18 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 export async function requireUser(
   ctx: QueryCtx | MutationCtx,
 ): Promise<Doc<"users">> {
-  const userId = await getAuthUserId(ctx);
-  if (userId === null) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (identity === null) {
     throw new ConvexError("Not authenticated");
   }
-  const user = await ctx.db.get(userId);
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_tokenIdentifier", (q) =>
+      q.eq("tokenIdentifier", identity.tokenIdentifier),
+    )
+    .unique();
   if (user === null) {
-    throw new ConvexError("Not authenticated");
+    throw new ConvexError("Profile not set up");
   }
   if (user.status === "banned") {
     throw new ConvexError("Your account has been banned");
