@@ -81,12 +81,15 @@ export function SignIn() {
         const maybeUsername = normalizedIdentifier.includes("@")
           ? undefined
           : normalizedIdentifier;
-        await signIn("password", {
+        const signInPayload: Record<string, any> = {
           email: authEmail,
-          username: maybeUsername,
           password,
           flow,
-        });
+        };
+        if (maybeUsername) {
+          signInPayload.username = maybeUsername;
+        }
+        await signIn("password", signInPayload);
       }
     } catch (err) {
       const msg =
