@@ -8,14 +8,13 @@ import { NewChatDialog } from "@/components/chat/new-chat-dialog";
 import type { Me } from "@/components/chat/types";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useClerk } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
 import { useMutation } from "convex/react";
-import { LogOut, PenLine, Shield } from "lucide-react";
+import { PenLine, Shield } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
 export function ChatApp({ me }: { me: Me }) {
-  const { signOut } = useClerk();
   const heartbeat = useMutation(api.users.heartbeat);
   const [selected, setSelected] = useState<Id<"conversations"> | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -49,14 +48,7 @@ export function ChatApp({ me }: { me: Me }) {
                 </Button>
               </Link>
             )}
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Sign out"
-              onClick={() => void signOut()}
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
+            <UserButton />
           </div>
         </header>
 
