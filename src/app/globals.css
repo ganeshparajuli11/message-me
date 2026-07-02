@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/*
+ * "Ink & Paper" design tokens (spec Section 7).
+ * Tailwind v4 is CSS-first: tokens live in @theme instead of
+ * tailwind.config.ts (the spec predates v4's config model — same tokens,
+ * new location; flagged in README).
+ */
+@theme {
+  --color-paper: #f7f3ec;
+  --color-ink: #2b2621;
+  --color-moss: #4a5d45;
+  --color-clay: #c77b58;
+  --color-ash: #9c9488;
+
+  /* Semantic aliases that flip in dark mode */
+  --color-bg: var(--tone-bg);
+  --color-fg: var(--tone-fg);
+  --color-surface: var(--tone-surface);
+  --color-surface-2: var(--tone-surface-2);
+  --color-line: var(--tone-line);
+
+  --font-display: "Fraunces Variable", Georgia, "Times New Roman", serif;
+  --font-sans: "Public Sans Variable", system-ui, -apple-system, sans-serif;
+
+  --animate-message-in: message-in 0.25s ease-out both;
+  @keyframes message-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+:root {
+  --tone-bg: #f7f3ec; /* paper */
+  --tone-fg: #2b2621; /* ink */
+  --tone-surface: #efe9de;
+  --tone-surface-2: #e6dfd1;
+  --tone-line: #ddd5c6;
+}
+
+/* Dark mode: invert to ink background / paper text, keep moss/clay accents */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tone-bg: #2b2621;
+    --tone-fg: #f7f3ec;
+    --tone-surface: #37312a;
+    --tone-surface-2: #423b33;
+    --tone-line: #4a4238;
+  }
+}
+
+body {
+  background-color: var(--tone-bg);
+  color: var(--tone-fg);
+  font-family: "Public Sans Variable", system-ui, sans-serif;
+}
+
+/* Faint paper-grain texture (~3–4% opacity noise) for tactile feel */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Asymmetric speech-bubble radii (Section 7 layout signature) */
+.bubble-own {
+  border-radius: 1.1rem 1.1rem 0.25rem 1.1rem;
+}
+.bubble-other {
+  border-radius: 1.1rem 1.1rem 1.1rem 0.25rem;
+}
+
+/* Thin scrollbars that match the palette */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tone-line) transparent;
+}
