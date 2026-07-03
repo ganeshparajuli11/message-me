@@ -304,7 +304,7 @@ export function ChatWindow({
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <Avatar username={other.username} online={online} />
+        <Avatar username={other.username} imageUrl={other.image} online={online} />
         <div className="min-w-0 flex-1">
           <p className="truncate font-display text-base font-semibold leading-tight">
             {other.username}

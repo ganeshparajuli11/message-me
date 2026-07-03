@@ -115,12 +115,44 @@ export const createCurrentUser = mutation({
   },
 });
 
-/** Presence heartbeat while the app is open. */
+/**
+ * Presence heartbeat while the app is open (every ~30s).
+ *
+ * BUGFIX (avatar sync): also re-syncs the denormalized Clerk profile fields
+ * (image/name/email) from the verified JWT claims. Clerk profile changes
+ * propagate here on the next heartbeat after the session token refreshes —
+ * the documented lightweight alternative to a Clerk webhook, which a
+ * self-hosted/local deployment can't easily receive.
+ */
 export const heartbeat = mutation({
   args: {},
   handler: async (ctx) => {
     const user = await requireUser(ctx);
-    await ctx.db.patch(user._id, { lastActiveAt: Date.now() });
+    const identity = await ctx.auth.getUserIdentity();
+    const patch: {
+      lastActiveAt: number;
+      image?: string;
+      name?: string;
+      email?: string;
+    } = { lastActiveAt: Date.now() };
+    if (identity !== null) {
+      if (
+        typeof identity.pictureUrl === "string" &&
+        identity.pictureUrl !== user.image
+      ) {
+        patch.image = identity.pictureUrl;
+      }
+      if (typeof identity.name === "string" && identity.name !== user.name) {
+        patch.name = identity.name;
+      }
+      if (
+        typeof identity.email === "string" &&
+        identity.email !== user.email
+      ) {
+        patch.email = identity.email;
+      }
+    }
+    await ctx.db.patch(user._id, patch);
   },
 });
 

@@ -76,7 +76,7 @@ export function FriendsPanel({
                 key={r._id}
                 className="flex items-center gap-3 rounded-xl bg-surface px-3 py-2.5"
               >
-                <Avatar username={r.other.username} className="scale-90" />
+                <Avatar username={r.other.username} imageUrl={r.other.image} className="scale-90" />
                 <span className="min-w-0 flex-1 truncate font-display font-semibold">
                   {r.other.username}
                 </span>
@@ -129,7 +129,7 @@ export function FriendsPanel({
                   key={f._id}
                   className="flex items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-surface"
                 >
-                  <Avatar username={f.username} online={online} className="scale-90" />
+                  <Avatar username={f.username} imageUrl={f.image} online={online} className="scale-90" />
                   <span className="min-w-0 flex-1 truncate font-display font-semibold">
                     {f.username}
                   </span>
@@ -202,7 +202,7 @@ export function FriendsPanel({
                 key={r._id}
                 className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm text-ash"
               >
-                <Avatar username={r.other.username} className="scale-75" />
+                <Avatar username={r.other.username} imageUrl={r.other.image} className="scale-75" />
                 <span className="min-w-0 flex-1 truncate">
                   {r.other.username}
                 </span>

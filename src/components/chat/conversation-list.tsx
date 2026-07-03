@@ -73,7 +73,11 @@ export function ConversationList({
                   selected === c._id && "bg-surface",
                 )}
               >
-                <Avatar username={c.other.username} online={online} />
+                <Avatar
+                  username={c.other.username}
+                  imageUrl={c.other.image}
+                  online={online}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="truncate font-display font-semibold">

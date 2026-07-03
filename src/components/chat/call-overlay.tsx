@@ -9,6 +9,7 @@ import { formatDuration } from "@/components/chat/message-bubble";
 import { cn } from "@/lib/utils";
 import { useMutation, useQuery } from "convex/react";
 import {
+  Loader2,
   Mic,
   MicOff,
   MonitorUp,
@@ -20,13 +21,19 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Calls (revamp Section 9). WebRTC peer-to-peer media; Convex is only the
- * signaling channel (offer/answer/ICE via calls.sendSignal/listSignals).
+ * Calls (revamp Section 9 + bugfix pass). WebRTC peer-to-peer media; Convex
+ * is only the signaling channel. The calls/callSignals schema and signaling
+ * logic are untouched by the bugfix — the blank-screen bug was a client
+ * lifecycle issue:
  *
- * ICE servers: a public STUN by default; the buyer's self-hosted coturn TURN
- * relay via NEXT_PUBLIC_TURN_* env vars (see deploy/coturn/). Kept
- * deliberately light: one component, no renegotiation — screen share swaps
- * the video track with RTCRtpSender.replaceTrack.
+ * BUG 1 ROOT CAUSE (rendering layer, not signaling): React StrictMode mounts
+ * effects twice in dev. The old setup effect set pcRef during a run that was
+ * then cancelled, and the re-run bailed on `pcRef.current` — leaving a
+ * PeerConnection with NO tracks attached. ICE happily "connects" the empty
+ * session (so the timer ran) over a black screen with no media. Fix: the
+ * setup effect now tears down completely in its cleanup (close pc, stop
+ * tracks, reset refs) so a re-run rebuilds from scratch, and signal
+ * processing waits on `pcReady` instead of racing the async setup.
  */
 
 function iceServers(): RTCIceServer[] {
@@ -61,19 +68,16 @@ export function CallOverlay({
   const incoming = useQuery(api.calls.myIncomingCall);
   const respondToCall = useMutation(api.calls.respondToCall);
 
-  // Incoming-call banner (only when not already in a call).
   if (callId === null) {
     if (!incoming) return null;
     return (
       <div className="fixed inset-x-0 top-4 z-50 mx-auto flex w-fit max-w-[92vw] items-center gap-3 rounded-2xl border border-line bg-bg px-4 py-3 shadow-xl animate-message-in">
-        <Avatar username={incoming.caller.username} />
+        <Avatar username={incoming.caller.username} imageUrl={incoming.caller.image} />
         <div className="min-w-0">
           <p className="truncate font-display font-semibold">
             {incoming.caller.username}
           </p>
-          <p className="text-xs text-ash">
-            incoming {incoming.type} call…
-          </p>
+          <p className="text-xs text-ash">incoming {incoming.type} call…</p>
         </div>
         <Button
           size="icon"
@@ -123,50 +127,50 @@ function CallPanel({
   const processedRef = useRef(new Set<string>());
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
-  const offerSentRef = useRef(false);
-  const closedRef = useRef(false);
+  const endedRef = useRef(false);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
 
+  const [pcReady, setPcReady] = useState(false);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
-  const [error, setError] = useState<string | null>(null);
 
   const isVideo = call?.type === "video";
   const status = call?.status;
+  const callLoaded = call !== undefined && call !== null;
 
   const hangUp = useCallback(() => {
-    if (closedRef.current) return;
-    closedRef.current = true;
+    if (endedRef.current) return;
+    endedRef.current = true;
     void endCall({ callId }).catch(() => {});
-    pcRef.current?.close();
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
     onClose();
   }, [callId, endCall, onClose]);
 
-  // --- Peer connection setup (once per call) ---
+  // --- Peer connection lifecycle (StrictMode-safe: cleanup fully tears
+  // down so a re-run rebuilds from scratch) ---
   useEffect(() => {
-    if (call === undefined || call === null || pcRef.current) return;
+    if (!callLoaded) return;
     let cancelled = false;
+    let pc: RTCPeerConnection | null = null;
+    let stream: MediaStream | null = null;
+    const video = call!.type === "video";
+    const iAmCaller = call!.iAmCaller;
 
     async function setup() {
       try {
-        const pc = new RTCPeerConnection({ iceServers: iceServers() });
-        pcRef.current = pc;
-
-        const stream = await navigator.mediaDevices.getUserMedia({
+        pc = new RTCPeerConnection({ iceServers: iceServers() });
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: true,
-          video: call!.type === "video",
+          video,
         });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
+        if (cancelled) return; // cleanup below stops everything
+
         localStreamRef.current = stream;
         cameraTrackRef.current = stream.getVideoTracks()[0] ?? null;
         for (const track of stream.getTracks()) {
@@ -178,8 +182,14 @@ function CallPanel({
 
         pc.ontrack = (e) => {
           const [remote] = e.streams;
-          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
-          if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remote;
+          if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remote) {
+            remoteVideoRef.current.srcObject = remote;
+            void remoteVideoRef.current.play().catch(() => {});
+          }
+          if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== remote) {
+            remoteAudioRef.current.srcObject = remote;
+            void remoteAudioRef.current.play().catch(() => {});
+          }
         };
         pc.onicecandidate = (e) => {
           if (e.candidate) {
@@ -191,15 +201,24 @@ function CallPanel({
           }
         };
         pc.onconnectionstatechange = () => {
-          if (pc.connectionState === "connected") setConnected(true);
-          if (["failed", "closed"].includes(pc.connectionState)) hangUp();
+          if (!pc) return;
+          if (pc.connectionState === "connected") {
+            setConnected(true);
+            setFailed(null);
+          }
+          if (pc.connectionState === "failed") {
+            setFailed(
+              "Could not connect — both sides may be behind strict networks (a TURN relay fixes this).",
+            );
+          }
         };
 
-        // Caller creates the offer immediately; the callee (mounted only
-        // after accepting) reads it from the signal log.
-        if (call!.iAmCaller && !offerSentRef.current) {
-          offerSentRef.current = true;
+        pcRef.current = pc;
+        setPcReady(true);
+
+        if (iAmCaller) {
           const offer = await pc.createOffer();
+          if (cancelled) return;
           await pc.setLocalDescription(offer);
           await sendSignal({
             callId,
@@ -208,30 +227,46 @@ function CallPanel({
           });
         }
       } catch {
-        setError("Could not access microphone/camera");
+        if (!cancelled) {
+          setFailed("Could not access your microphone/camera — check browser permissions.");
+        }
       }
     }
     void setup();
+
     return () => {
       cancelled = true;
+      stream?.getTracks().forEach((t) => t.stop());
+      pc?.close();
+      pcRef.current = null;
+      localStreamRef.current = null;
+      cameraTrackRef.current = null;
+      pendingIceRef.current = [];
+      processedRef.current.clear();
+      chainRef.current = Promise.resolve();
+      setPcReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [call === undefined || call === null]);
+  }, [callLoaded, callId]);
 
-  // --- Process incoming signals sequentially ---
+  // --- Process signals sequentially once the pc exists (pcReady closes the
+  // race where signals load before async setup finishes) ---
   useEffect(() => {
     const pc = pcRef.current;
-    if (!pc || !signals || !call) return;
-    const mine = signals
+    if (!pc || !pcReady || !signals || !call) return;
+    const fresh = signals
       .filter(
         (s) => s.fromUserId !== me._id && !processedRef.current.has(s._id),
       )
       .sort((a, b) => a.createdAt - b.createdAt);
-    for (const s of mine) {
+    for (const s of fresh) {
       processedRef.current.add(s._id);
       chainRef.current = chainRef.current
         .then(async () => {
+          if (pcRef.current !== pc) return; // torn down mid-flight
           if (s.type === "offer" && !call.iAmCaller) {
+            // Ignore duplicate offers (e.g. caller remounted in dev).
+            if (pc.remoteDescription !== null) return;
             await pc.setRemoteDescription(JSON.parse(s.payload));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -241,6 +276,7 @@ function CallPanel({
               payload: JSON.stringify(answer),
             });
           } else if (s.type === "answer" && call.iAmCaller) {
+            if (pc.remoteDescription !== null) return;
             await pc.setRemoteDescription(JSON.parse(s.payload));
           } else if (s.type === "ice-candidate") {
             const candidate = JSON.parse(s.payload) as RTCIceCandidateInit;
@@ -250,7 +286,6 @@ function CallPanel({
               await pc.addIceCandidate(candidate);
             }
           }
-          // Flush ICE queued before the remote description arrived.
           if (pc.remoteDescription !== null && pendingIceRef.current.length) {
             const queued = pendingIceRef.current.splice(0);
             for (const c of queued) {
@@ -260,16 +295,16 @@ function CallPanel({
         })
         .catch(() => {});
     }
-  }, [signals, call, callId, me._id, sendSignal]);
+  }, [signals, call, callId, me._id, pcReady, sendSignal]);
 
-  // --- React to remote status changes ---
+  // Remote side ended/declined → close.
   useEffect(() => {
     if (status === "ended" || status === "declined" || status === "missed") {
       hangUp();
     }
   }, [status, hangUp]);
 
-  // Ring timeout safety on the caller side.
+  // Caller-side ring timeout.
   useEffect(() => {
     if (!call?.iAmCaller || status !== "ringing") return;
     const t = setTimeout(hangUp, 45_000);
@@ -325,39 +360,87 @@ function CallPanel({
       };
       setSharing(true);
     } catch {
-      // User cancelled the picker — nothing to do.
+      // User cancelled the picker.
     }
   }
 
-  if (call === undefined) return null;
-  if (call === null || call.other === null) {
-    return null;
+  if (call === undefined) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink">
+        <Loader2 className="h-6 w-6 animate-spin text-paper/70" />
+      </div>
+    );
   }
+  if (call === null || call.other === null) return null;
+
+  const statusLine = failed
+    ? null
+    : status === "ringing"
+      ? call.iAmCaller
+        ? "ringing…"
+        : "connecting…"
+      : connected
+        ? formatDuration(elapsed)
+        : "connecting…";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-ink text-paper">
-      {/* Remote media */}
+      {/* Header — never overlaps controls, sits above the video */}
+      <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-gradient-to-b from-ink/80 to-transparent px-4 pb-10 pt-4 text-center">
+        <p className="font-display text-lg font-semibold">
+          {call.other.username}
+        </p>
+        {statusLine && (
+          <p className="text-sm tabular-nums text-paper/70">{statusLine}</p>
+        )}
+      </div>
+
+      {/* Media area */}
       <div className="relative min-h-0 flex-1">
         {isVideo ? (
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className="h-full w-full object-contain"
+            className="h-full w-full bg-black/40 object-contain"
           />
         ) : (
           <>
             <audio ref={remoteAudioRef} autoPlay />
-            <div className="flex h-full flex-col items-center justify-center gap-4">
-              <Avatar username={call.other.username} className="scale-[2.2]" />
-              <p className="mt-6 font-display text-2xl font-semibold">
+            <div className="flex h-full flex-col items-center justify-center gap-6">
+              <Avatar
+                username={call.other.username}
+                imageUrl={call.other.image}
+                className="scale-[2.2]"
+              />
+              <p className="mt-4 font-display text-2xl font-semibold">
                 {call.other.username}
               </p>
             </div>
           </>
         )}
 
-        {/* Local preview (video calls) */}
+        {/* Connecting / failed overlays — no more silent black screen */}
+        {!connected && !failed && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-ink/60">
+            <Loader2 className="h-7 w-7 animate-spin text-paper/80" />
+            <p className="text-sm text-paper/80">
+              {status === "ringing" && call.iAmCaller
+                ? `Calling ${call.other.username}…`
+                : "Connecting…"}
+            </p>
+          </div>
+        )}
+        {failed && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink/80 p-6 text-center">
+            <p className="max-w-sm text-sm text-paper/90">{failed}</p>
+            <Button variant="destructive" onClick={hangUp}>
+              Close
+            </Button>
+          </div>
+        )}
+
+        {/* Local self-view: bottom-right, mirrored */}
         {isVideo && (
           <video
             ref={localVideoRef}
@@ -365,35 +448,25 @@ function CallPanel({
             playsInline
             muted
             className={cn(
-              "absolute bottom-4 right-4 w-32 rounded-xl border border-paper/20 shadow-lg md:w-44",
+              "absolute bottom-3 right-3 z-10 w-28 -scale-x-100 rounded-xl border border-paper/25 bg-black/50 shadow-lg sm:w-36 md:w-44",
               cameraOff && "opacity-30",
+              sharing && "scale-x-100", // don't mirror a shared screen
             )}
           />
         )}
-
-        <div className="absolute left-0 right-0 top-4 text-center">
-          <p className="font-display text-lg">{call.other.username}</p>
-          <p className="text-sm text-paper/70">
-            {error ??
-              (status === "ringing"
-                ? call.iAmCaller
-                  ? "ringing…"
-                  : "connecting…"
-                : connected
-                  ? formatDuration(elapsed)
-                  : "connecting…")}
-          </p>
-        </div>
       </div>
 
-      {/* Controls */}
-      <div className="flex items-center justify-center gap-3 p-5">
+      {/* Control bar — always visible, safe-area aware */}
+      <div className="z-10 flex shrink-0 items-center justify-center gap-3 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-4">
         <Button
           size="icon"
-          variant={muted ? "accent" : "ghost"}
           aria-label={muted ? "Unmute" : "Mute"}
+          title={muted ? "Unmute" : "Mute"}
           onClick={toggleMute}
-          className="h-12 w-12 rounded-full bg-paper/10 text-paper hover:bg-paper/20"
+          className={cn(
+            "h-13 w-13 rounded-full text-paper",
+            muted ? "bg-clay hover:bg-clay/85" : "bg-paper/15 hover:bg-paper/25",
+          )}
         >
           {muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
         </Button>
@@ -401,10 +474,15 @@ function CallPanel({
           <>
             <Button
               size="icon"
-              variant={cameraOff ? "accent" : "ghost"}
               aria-label={cameraOff ? "Turn camera on" : "Turn camera off"}
+              title={cameraOff ? "Camera on" : "Camera off"}
               onClick={toggleCamera}
-              className="h-12 w-12 rounded-full bg-paper/10 text-paper hover:bg-paper/20"
+              className={cn(
+                "h-13 w-13 rounded-full text-paper",
+                cameraOff
+                  ? "bg-clay hover:bg-clay/85"
+                  : "bg-paper/15 hover:bg-paper/25",
+              )}
             >
               {cameraOff ? (
                 <VideoOff className="h-5 w-5" />
@@ -414,12 +492,14 @@ function CallPanel({
             </Button>
             <Button
               size="icon"
-              variant={sharing ? "accent" : "ghost"}
               aria-label={sharing ? "Stop sharing screen" : "Share screen"}
+              title={sharing ? "Stop sharing" : "Share screen"}
               onClick={() => void toggleScreenShare()}
               className={cn(
-                "h-12 w-12 rounded-full text-paper",
-                sharing ? "bg-clay hover:bg-clay/80" : "bg-paper/10 hover:bg-paper/20",
+                "h-13 w-13 rounded-full text-paper",
+                sharing
+                  ? "bg-clay hover:bg-clay/85"
+                  : "bg-paper/15 hover:bg-paper/25",
               )}
             >
               <MonitorUp className="h-5 w-5" />
@@ -428,10 +508,10 @@ function CallPanel({
         )}
         <Button
           size="icon"
-          variant="destructive"
           aria-label="End call"
+          title="End call"
           onClick={hangUp}
-          className="h-12 w-12 rounded-full"
+          className="h-13 w-13 rounded-full bg-red-600 text-paper hover:bg-red-700"
         >
           <PhoneOff className="h-5 w-5" />
         </Button>

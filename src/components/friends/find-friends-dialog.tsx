@@ -104,7 +104,7 @@ export function FindFriendsDialog({
                 key={u._id}
                 className="flex items-center gap-3 rounded-xl px-2 py-2 hover:bg-surface"
               >
-                <Avatar username={u.username} className="scale-90" />
+                <Avatar username={u.username} imageUrl={u.image} className="scale-90" />
                 <span className="min-w-0 flex-1 truncate font-display font-semibold">
                   {u.username}
                 </span>

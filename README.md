@@ -127,6 +127,35 @@ Implements `inkwell-revamp-prompt.md` Sections 2–7:
    public STUN but may fail behind strict/symmetric NATs — configure
    `deploy/coturn/` + the `NEXT_PUBLIC_TURN_*` env vars for production.
 
+## Bugfix pass (inkwell-bugfix-prompt.md)
+
+1. **Call screen blank / no controls** — root cause was the RENDERING layer,
+   not signaling (schema/signaling untouched, per the constraint): React
+   StrictMode double-mounts effects in dev; the old setup effect left a
+   cancelled PeerConnection in a ref, so the re-run bailed out and the call
+   ran with NO media tracks (ICE "connects" the empty session, which is why
+   the timer ticked over a black screen). The setup effect now fully tears
+   down in its cleanup and rebuilds on re-run; signal processing waits on
+   pcReady (fixes a signals-before-pc race); duplicate offers are ignored.
+   UI: mirrored bottom-right self-view, remote fills the area, always-visible
+   safe-area-aware control bar (mute / camera / screen share / red end),
+   explicit "Connecting…" and failure states instead of silent black.
+   NOTE for testing: two tabs on ONE machine can fight over the camera —
+   test video across two devices; cross-network reliability needs the
+   coturn TURN relay (deploy/coturn/).
+2. **Duplicate sidebar avatar** — the header rendered both a decorative
+   custom Avatar and Clerk's UserButton. The UserButton (which opens account
+   settings) is now the single self-avatar.
+3. **Profile picture not updating** — the users table stores a denormalized
+   copy of Clerk profile data that was only written at signup. Chosen fix
+   (documented alternative to a webhook, which a self-hosted/local backend
+   can't easily receive): the presence heartbeat (~30s) re-syncs
+   image/name/email from the verified Clerk JWT claims, so changes propagate
+   within about a minute of the session token refreshing — for the user AND
+   for everyone who sees their avatar. Avatars across the app (sidebar,
+   chat header, friends, calls) now render the stored photo, falling back to
+   initials.
+
 ## Architecture Notes
 
 - `convex/schema.ts` stores app profile rows keyed by Clerk-backed

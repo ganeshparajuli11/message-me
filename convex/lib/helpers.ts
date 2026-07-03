@@ -122,6 +122,7 @@ export function publicUser(user: Doc<"users">) {
   return {
     _id: user._id,
     username: user.username,
+    image: user.image ?? null,
     status: user.status,
     lastActiveAt: user.lastActiveAt ?? null,
   };

@@ -8,7 +8,6 @@ import { ConversationList } from "@/components/chat/conversation-list";
 import type { Me } from "@/components/chat/types";
 import { FindFriendsDialog } from "@/components/friends/find-friends-dialog";
 import { FriendsPanel } from "@/components/friends/friends-panel";
-import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { UserButton } from "@clerk/nextjs";
@@ -72,8 +71,9 @@ export function ChatApp({ me }: { me: Me }) {
         )}
       >
         {/* Profile header */}
+        {/* Bug 2 fix: UserButton is the single self-avatar (opens Clerk
+            account settings); the old decorative Avatar duplicate is gone. */}
         <header className="flex items-center gap-3 border-b border-line px-4 py-3">
-          <Avatar username={me.username} online />
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-display text-lg font-semibold leading-tight">
               {me.username}
