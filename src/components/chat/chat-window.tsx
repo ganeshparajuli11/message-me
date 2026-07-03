@@ -434,7 +434,7 @@ export function ChatWindow({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4 pb-24"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4 pb-[calc(9rem+env(safe-area-inset-bottom))] md:pb-24"
       >
         {pageStatus === "LoadingMore" && (
           <div className="flex justify-center py-2">
@@ -585,7 +585,7 @@ export function ChatWindow({
         {otherIsTyping && <TypingIndicator />}
       </div>
 
-      <div className="sticky bottom-0 z-20">
+      <div className="fixed inset-x-0 bottom-0 z-20 bg-bg/95 backdrop-blur-sm md:static md:bg-transparent md:backdrop-blur-none">
         {actionError && (
           <p className="border-t border-line bg-clay/10 px-4 py-2 text-xs text-clay">
             {actionError}
