@@ -2,15 +2,16 @@
 
 import { api } from "../../../convex/_generated/api";
 import { AdminPanel } from "@/components/admin/admin-panel";
-import { useConvexAuth, useQuery } from "convex/react";
+import { useAuth } from "@clerk/nextjs";
+import { useQuery } from "convex/react";
 import { Loader2 } from "lucide-react";
 import Link from "next/link";
 
 export default function AdminPage() {
-  const { isLoading, isAuthenticated } = useConvexAuth();
-  const me = useQuery(api.users.currentUser, isAuthenticated ? {} : "skip");
+  const { isLoaded: clerkLoaded, isSignedIn } = useAuth();
+  const me = useQuery(api.users.currentUser, isSignedIn ? {} : "skip");
 
-  if (isLoading || (isAuthenticated && me === undefined)) {
+  if (!clerkLoaded || (isSignedIn && me === undefined)) {
     return (
       <main className="flex min-h-dvh items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-ash" />
@@ -18,7 +19,7 @@ export default function AdminPage() {
     );
   }
 
-  if (!isAuthenticated || !me || me.role !== "admin") {
+  if (!isSignedIn || !me || me.role !== "admin") {
     return (
       <main className="flex min-h-dvh flex-col items-center justify-center gap-3">
         <p className="font-display text-lg">Admins only.</p>

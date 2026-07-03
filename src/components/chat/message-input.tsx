@@ -90,7 +90,7 @@ export function MessageInput({
 
   if (recorder.recording) {
     return (
-      <div className="border-t border-line bg-surface/50 p-3">
+      <div className="border-t border-line bg-surface/50 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="flex items-center gap-3">
           <span className="flex h-10 flex-1 items-center gap-3 rounded-xl border border-clay/40 bg-bg px-4">
             <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-clay" />
@@ -122,7 +122,7 @@ export function MessageInput({
   }
 
   return (
-    <div className="border-t border-line bg-surface/50 p-3">
+    <div className="border-t border-line bg-surface/50 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       {imageError && <p className="mb-2 text-xs text-clay">{imageError}</p>}
       {compressing && (
         <p className="mb-2 text-xs text-ash">Optimizing image…</p>
