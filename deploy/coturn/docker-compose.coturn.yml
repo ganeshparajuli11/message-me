@@ -1,0 +1,10 @@
+# Optional: self-hosted TURN relay for calls (revamp Section 9).
+# Run on the same VPS: docker compose -f docker-compose.coturn.yml up -d
+# Open UDP/TCP 3478 (+5349 for TLS) and UDP 49160-49200 in the firewall.
+services:
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host # TURN needs real ports/IPs; host networking is simplest
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro

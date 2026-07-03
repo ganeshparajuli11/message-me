@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import {
+  areFriends,
   isBlockedEitherDirection,
   otherParticipantId,
   publicUser,
@@ -29,6 +30,10 @@ export const createConversation = mutation({
     }
     if (await isBlockedEitherDirection(ctx, me._id, args.otherUserId)) {
       throw new ConvexError("You cannot message this user");
+    }
+    // Friend gate (revamp Section 2): conversations require mutual acceptance.
+    if (!(await areFriends(ctx, me._id, args.otherUserId))) {
+      throw new ConvexError("You can only message friends");
     }
 
     // participantIds are always stored sorted so the array-equality index

@@ -1,0 +1,33 @@
+# coturn config for Inkwell calls (self-hosted TURN relay).
+# Copy to turnserver.conf and fill in the CHANGE_ME values.
+#
+# TURN keeps the "one VPS bill" cost model — the relay runs on the buyer's
+# own server; no metered TURN SaaS. STUN alone works on friendly networks,
+# TURN is the fallback that makes calls reliable behind strict NATs.
+
+listening-port=3478
+# TLS relay (recommended in production; point at your cert paths):
+# tls-listening-port=5349
+# cert=/etc/letsencrypt/live/turn.your-domain.com/fullchain.pem
+# pkey=/etc/letsencrypt/live/turn.your-domain.com/privkey.pem
+
+# Public IP of the VPS (required when behind NAT/cloud networking):
+# external-ip=YOUR_SERVER_PUBLIC_IP
+
+realm=turn.your-domain.com
+fingerprint
+
+# Static credentials (simplest setup; rotate periodically).
+lt-cred-mech
+user=inkwell:CHANGE_ME_STRONG_SECRET
+
+# Limit relay ports so the firewall stays tight:
+min-port=49160
+max-port=49200
+
+# Hardening
+no-cli
+no-tcp-relay
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255

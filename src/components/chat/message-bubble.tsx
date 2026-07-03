@@ -1,21 +1,30 @@
 "use client";
 
 import { cn, formatTime } from "@/lib/utils";
-import { AlertCircle, Check, CheckCheck } from "lucide-react";
+import { AlertCircle, Check, CheckCheck, Mic, Pin } from "lucide-react";
 /* eslint-disable @next/next/no-img-element */
 
 export type BubbleMessage = {
   mine: boolean;
-  type: "text" | "image";
+  type: "text" | "image" | "voice";
   text: string | null;
   imageUrl: string | null;
+  voiceUrl?: string | null;
+  voiceDurationSeconds?: number | null;
   deleted: boolean;
   editedAt: number | null;
   createdAt: number | null; // null for optimistic/pending
   /** null = pending (optimistic), otherwise persisted */
   tick: "pending" | "sent" | "delivered" | "read" | "failed" | null;
+  pinned?: boolean;
   animateIn?: boolean;
 };
+
+export function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 /**
  * WhatsApp-style ticks per spec Section 6:
@@ -47,13 +56,18 @@ function Ticks({ tick }: { tick: BubbleMessage["tick"] }) {
 export function MessageBubble({
   message,
   children,
+  onImageClick,
+  domId,
 }: {
   message: BubbleMessage;
   children?: React.ReactNode; // action buttons (edit/delete/report/retry)
+  onImageClick?: () => void;
+  domId?: string;
 }) {
   const { mine } = message;
   return (
     <div
+      id={domId}
       className={cn(
         "group flex w-full items-end gap-2",
         mine ? "justify-end" : "justify-start",
@@ -74,18 +88,66 @@ export function MessageBubble({
           message.deleted && "opacity-60",
         )}
       >
+        {message.pinned && !message.deleted && (
+          <p
+            className={cn(
+              "mb-1 flex items-center gap-1 text-[10px] font-medium",
+              mine ? "text-paper/70" : "text-ash",
+            )}
+          >
+            <Pin className="h-3 w-3" /> Pinned
+          </p>
+        )}
         {message.deleted ? (
-          <p className="text-sm italic opacity-80">Message deleted</p>
+          <p className="text-sm italic opacity-80">This message was deleted</p>
         ) : message.type === "image" ? (
           message.imageUrl ? (
-            <img
-              src={message.imageUrl}
-              alt="Photo message"
-              className="max-h-72 rounded-lg object-contain"
-              loading="lazy"
-            />
+            <button
+              type="button"
+              onClick={onImageClick}
+              aria-label="Expand image"
+              className="block cursor-zoom-in"
+            >
+              <img
+                src={message.imageUrl}
+                alt="Photo message"
+                className="max-h-72 rounded-lg object-contain"
+                loading="lazy"
+              />
+            </button>
           ) : (
             <div className="h-40 w-52 animate-pulse rounded-lg bg-black/10" />
+          )
+        ) : message.type === "voice" ? (
+          message.voiceUrl ? (
+            <span className="flex items-center gap-2">
+              <Mic
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  mine ? "text-paper/80" : "text-moss",
+                )}
+              />
+              <audio
+                controls
+                preload="metadata"
+                src={message.voiceUrl}
+                className="h-10 w-52 max-w-full"
+              />
+              {typeof message.voiceDurationSeconds === "number" && (
+                <span
+                  className={cn(
+                    "text-[10px] tabular-nums",
+                    mine ? "text-paper/70" : "text-ash",
+                  )}
+                >
+                  {formatDuration(message.voiceDurationSeconds)}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="flex h-10 w-52 items-center gap-2 text-sm opacity-70">
+              <Mic className="h-4 w-4 animate-pulse" /> Voice note…
+            </span>
           )
         ) : (
           <p className="whitespace-pre-wrap break-words text-sm">

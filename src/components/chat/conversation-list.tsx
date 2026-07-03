@@ -7,16 +7,18 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatListTimestamp } from "@/lib/utils";
 import { useQuery } from "convex/react";
 import { useNow } from "@/hooks/use-now";
-import { ImageIcon } from "lucide-react";
+import { ImageIcon, Mic } from "lucide-react";
 
 const ONLINE_WINDOW_MS = 60_000;
 
 export function ConversationList({
   selected,
   onSelect,
+  onFindFriends,
 }: {
   selected: Id<"conversations"> | null;
   onSelect: (id: Id<"conversations">) => void;
+  onFindFriends: () => void;
 }) {
   const conversations = useQuery(api.conversations.listConversations);
   const now = useNow();
@@ -39,12 +41,18 @@ export function ConversationList({
 
   if (conversations.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center p-6 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-sm text-ash">
           No conversations yet.
           <br />
-          Start a new note to say hello.
+          Chats open once a friend request is accepted.
         </p>
+        <button
+          onClick={onFindFriends}
+          className="text-sm font-medium text-clay underline underline-offset-4 hover:text-clay/80 cursor-pointer"
+        >
+          Find friends
+        </button>
       </div>
     );
   }
@@ -86,6 +94,10 @@ export function ConversationList({
                       ) : c.lastMessage.type === "image" ? (
                         <span className="inline-flex items-center gap-1">
                           <ImageIcon className="h-3.5 w-3.5" /> Photo
+                        </span>
+                      ) : c.lastMessage.type === "voice" ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Mic className="h-3.5 w-3.5" /> Voice note
                         </span>
                       ) : (
                         <>

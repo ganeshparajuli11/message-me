@@ -8,8 +8,13 @@ import {
   IMAGE_MAX_BYTES,
   MESSAGE_MAX_LENGTH,
 } from "../../../convex/lib/validation";
+import { formatDuration } from "@/components/chat/message-bubble";
+import {
+  useVoiceRecorder,
+  type VoiceRecording,
+} from "@/hooks/use-voice-recorder";
 import { useMutation } from "convex/react";
-import { ImagePlus, SendHorizonal } from "lucide-react";
+import { ImagePlus, Mic, SendHorizonal, Square, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 
 export function MessageInput({
@@ -17,14 +22,19 @@ export function MessageInput({
   disabled,
   onSendText,
   onSendImage,
+  onSendVoice,
 }: {
   conversationId: Id<"conversations">;
   disabled: boolean;
   onSendText: (text: string) => void;
   onSendImage: (file: File) => void;
+  onSendVoice: (recording: VoiceRecording) => void;
 }) {
   const [text, setText] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
+  // Voice UX decision (flagged): tap-to-start / tap-to-stop, not
+  // hold-to-record — simpler and more reliable across devices.
+  const recorder = useVoiceRecorder();
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTypingSentAt = useRef(0);
   const setTyping = useMutation(api.typing.setTyping);
@@ -60,9 +70,50 @@ export function MessageInput({
     onSendImage(file);
   }
 
+  async function finishRecording() {
+    const result = await recorder.stop();
+    if (result) onSendVoice(result);
+  }
+
+  if (recorder.recording) {
+    return (
+      <div className="border-t border-line bg-surface/50 p-3">
+        <div className="flex items-center gap-3">
+          <span className="flex h-10 flex-1 items-center gap-3 rounded-xl border border-clay/40 bg-bg px-4">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-clay" />
+            <span className="text-sm text-fg">Recording…</span>
+            <span className="ml-auto text-sm tabular-nums text-ash">
+              {formatDuration(recorder.seconds)}
+            </span>
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Discard recording"
+            onClick={() => recorder.cancel()}
+          >
+            <Trash2 className="h-5 w-5 text-ash" />
+          </Button>
+          <Button
+            variant="accent"
+            size="icon"
+            aria-label="Stop and send"
+            onClick={() => void finishRecording()}
+            className="rounded-xl"
+          >
+            <Square className="h-4 w-4 fill-current" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="border-t border-line bg-surface/50 p-3">
       {imageError && <p className="mb-2 text-xs text-clay">{imageError}</p>}
+      {recorder.error && (
+        <p className="mb-2 text-xs text-clay">{recorder.error}</p>
+      )}
       <div className="flex items-end gap-2">
         <input
           ref={fileRef}
@@ -98,16 +149,29 @@ export function MessageInput({
           placeholder={disabled ? "Messaging unavailable" : "Write a note…"}
           className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-bg px-3 py-2.5 text-sm placeholder:text-ash focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-moss/40 disabled:opacity-50"
         />
-        <Button
-          variant="accent"
-          size="icon"
-          aria-label="Send"
-          disabled={disabled || text.trim().length === 0}
-          onClick={submit}
-          className="rounded-xl"
-        >
-          <SendHorizonal className="h-5 w-5" />
-        </Button>
+        {text.trim().length === 0 ? (
+          <Button
+            variant="accent"
+            size="icon"
+            aria-label="Record a voice note"
+            disabled={disabled}
+            onClick={() => void recorder.start()}
+            className="rounded-xl"
+          >
+            <Mic className="h-5 w-5" />
+          </Button>
+        ) : (
+          <Button
+            variant="accent"
+            size="icon"
+            aria-label="Send"
+            disabled={disabled}
+            onClick={submit}
+            className="rounded-xl"
+          >
+            <SendHorizonal className="h-5 w-5" />
+          </Button>
+        )}
       </div>
     </div>
   );

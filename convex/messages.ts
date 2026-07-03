@@ -2,6 +2,7 @@ import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import {
+  areFriends,
   isBlockedEitherDirection,
   otherParticipantId,
   requireParticipant,
@@ -10,7 +11,12 @@ import {
 import {
   IMAGE_ALLOWED_TYPES,
   IMAGE_MAX_BYTES,
+  VOICE_ALLOWED_TYPES,
+  VOICE_MAX_BYTES,
+  VOICE_MAX_DURATION_S,
+  MAX_PINNED_PER_CONVERSATION,
   MESSAGE_MAX_LENGTH,
+  PIN_SCAN_LIMIT,
   SEND_RATE_LIMIT_COUNT,
   SEND_RATE_LIMIT_WINDOW_MS,
 } from "./lib/validation";
@@ -23,9 +29,11 @@ import {
 export const sendMessage = mutation({
   args: {
     conversationId: v.id("conversations"),
-    type: v.union(v.literal("text"), v.literal("image")),
+    type: v.union(v.literal("text"), v.literal("image"), v.literal("voice")),
     text: v.optional(v.string()),
     imageStorageId: v.optional(v.id("_storage")),
+    voiceStorageId: v.optional(v.id("_storage")),
+    voiceDurationSeconds: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const me = await requireUser(ctx);
@@ -38,6 +46,11 @@ export const sendMessage = mutation({
     if (await isBlockedEitherDirection(ctx, me._id, otherId)) {
       throw new ConvexError("You cannot message this user");
     }
+    // Friend gate (revamp Section 2): unfriending keeps history but blocks
+    // new messages until re-friended — enforced here, not just in the UI.
+    if (!(await areFriends(ctx, me._id, otherId))) {
+      throw new ConvexError("You can only message friends");
+    }
 
     // Content validation.
     if (args.type === "text") {
@@ -48,7 +61,7 @@ export const sendMessage = mutation({
           `Message too long (max ${MESSAGE_MAX_LENGTH} characters)`,
         );
       }
-    } else {
+    } else if (args.type === "image") {
       if (args.imageStorageId === undefined) {
         throw new ConvexError("Missing image");
       }
@@ -62,6 +75,29 @@ export const sendMessage = mutation({
         !IMAGE_ALLOWED_TYPES.includes(meta.contentType)
       ) {
         throw new ConvexError("Unsupported image type");
+      }
+    } else {
+      // Voice note (revamp Section 8) — server-side caps like images.
+      if (args.voiceStorageId === undefined) {
+        throw new ConvexError("Missing voice recording");
+      }
+      const meta = await ctx.db.system.get(args.voiceStorageId);
+      if (meta === null) throw new ConvexError("Recording not found");
+      if (meta.size > VOICE_MAX_BYTES) {
+        throw new ConvexError("Voice note too large (max 10 MB)");
+      }
+      if (
+        meta.contentType === undefined ||
+        !VOICE_ALLOWED_TYPES.includes(meta.contentType)
+      ) {
+        throw new ConvexError("Unsupported audio format");
+      }
+      if (
+        args.voiceDurationSeconds === undefined ||
+        args.voiceDurationSeconds <= 0 ||
+        args.voiceDurationSeconds > VOICE_MAX_DURATION_S
+      ) {
+        throw new ConvexError("Voice notes can be up to 5 minutes");
       }
     }
 
@@ -87,6 +123,11 @@ export const sendMessage = mutation({
       type: args.type,
       text: args.type === "text" ? args.text?.trim() : undefined,
       imageStorageId: args.type === "image" ? args.imageStorageId : undefined,
+      voiceStorageId: args.type === "voice" ? args.voiceStorageId : undefined,
+      voiceDurationSeconds:
+        args.type === "voice"
+          ? Math.round(args.voiceDurationSeconds ?? 0)
+          : undefined,
       status: "sent",
       createdAt: now,
     });
@@ -116,10 +157,21 @@ export const getMessages = query({
       .order("desc")
       .paginate(args.paginationOpts);
 
+    // "Delete for me": drop messages hidden for the caller (indexed point
+    // lookups per message in the page — revamp Section 6).
+    const visible = [];
+    for (const m of page.page) {
+      const hiddenRows = await ctx.db
+        .query("messageHiddenFor")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .collect();
+      if (!hiddenRows.some((h) => h.userId === me._id)) visible.push(m);
+    }
+
     return {
       ...page,
       page: await Promise.all(
-        page.page.map(async (m) => {
+        visible.map(async (m) => {
           const deleted = m.deletedAt !== undefined;
           return {
             _id: m._id,
@@ -130,9 +182,15 @@ export const getMessages = query({
               !deleted && m.type === "image" && m.imageStorageId !== undefined
                 ? await ctx.storage.getUrl(m.imageStorageId)
                 : null,
+            voiceUrl:
+              !deleted && m.type === "voice" && m.voiceStorageId !== undefined
+                ? await ctx.storage.getUrl(m.voiceStorageId)
+                : null,
+            voiceDurationSeconds: m.voiceDurationSeconds ?? null,
             status: m.status,
             editedAt: m.editedAt ?? null,
             deleted,
+            pinnedAt: m.pinnedAt ?? null,
             createdAt: m.createdAt,
           };
         }),
@@ -192,8 +250,12 @@ export const editMessage = mutation({
   },
 });
 
-/** deleteMessage — soft delete, only the sender may call. (Spec Section 5.) */
-export const deleteMessage = mutation({
+/**
+ * "Delete for everyone" — soft delete (existing deletedAt pattern), only the
+ * sender may call. Rendered as a tombstone for both participants.
+ * (Spec Section 5 soft delete + revamp Section 6.)
+ */
+export const deleteMessageForEveryone = mutation({
   args: { messageId: v.id("messages") },
   handler: async (ctx, args) => {
     const me = await requireUser(ctx);
@@ -202,7 +264,117 @@ export const deleteMessage = mutation({
     if (message.senderId !== me._id) {
       throw new ConvexError("You can only delete your own messages");
     }
-    await ctx.db.patch(args.messageId, { deletedAt: Date.now() });
+    await ctx.db.patch(args.messageId, {
+      deletedAt: Date.now(),
+      // A deleted message cannot stay pinned.
+      pinnedAt: undefined,
+      pinnedBy: undefined,
+    });
+  },
+});
+
+/**
+ * "Delete for me" — either participant may hide any message from their own
+ * view only. (Revamp Section 6.)
+ */
+export const deleteMessageForMe = mutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, args) => {
+    const me = await requireUser(ctx);
+    const message = await ctx.db.get(args.messageId);
+    if (message === null) throw new ConvexError("Message not found");
+    await requireParticipant(ctx, message.conversationId, me._id);
+    const existing = await ctx.db
+      .query("messageHiddenFor")
+      .withIndex("by_message", (q) => q.eq("messageId", args.messageId))
+      .collect();
+    if (existing.some((h) => h.userId === me._id)) return;
+    await ctx.db.insert("messageHiddenFor", {
+      messageId: args.messageId,
+      userId: me._id,
+    });
+  },
+});
+
+/**
+ * Pin a message for both participants (revamp Section 5). Max 3 pinned per
+ * conversation — rejected with a clear error, never silently overwritten.
+ * Pin counting scans the newest PIN_SCAN_LIMIT messages of the conversation
+ * via by_conversation (bounded, indexed).
+ */
+export const pinMessage = mutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, args) => {
+    const me = await requireUser(ctx);
+    const message = await ctx.db.get(args.messageId);
+    if (message === null || message.deletedAt !== undefined) {
+      throw new ConvexError("Message not found");
+    }
+    await requireParticipant(ctx, message.conversationId, me._id);
+    if (message.pinnedAt !== undefined) return;
+
+    const recent = await ctx.db
+      .query("messages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", message.conversationId),
+      )
+      .order("desc")
+      .take(PIN_SCAN_LIMIT);
+    const pinnedCount = recent.filter((m) => m.pinnedAt !== undefined).length;
+    if (pinnedCount >= MAX_PINNED_PER_CONVERSATION) {
+      throw new ConvexError(
+        `You can pin at most ${MAX_PINNED_PER_CONVERSATION} messages — unpin one first`,
+      );
+    }
+    await ctx.db.patch(args.messageId, {
+      pinnedAt: Date.now(),
+      pinnedBy: me._id,
+    });
+  },
+});
+
+/** Unpin — either participant may unpin. (Revamp Section 5.) */
+export const unpinMessage = mutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, args) => {
+    const me = await requireUser(ctx);
+    const message = await ctx.db.get(args.messageId);
+    if (message === null) throw new ConvexError("Message not found");
+    await requireParticipant(ctx, message.conversationId, me._id);
+    await ctx.db.patch(args.messageId, {
+      pinnedAt: undefined,
+      pinnedBy: undefined,
+    });
+  },
+});
+
+/**
+ * Pinned messages for the pinned bar. Bounded indexed scan (newest
+ * PIN_SCAN_LIMIT) — pins older than that window simply age out of the bar.
+ */
+export const listPinnedMessages = query({
+  args: { conversationId: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const me = await requireUser(ctx);
+    await requireParticipant(ctx, args.conversationId, me._id);
+    const recent = await ctx.db
+      .query("messages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .order("desc")
+      .take(PIN_SCAN_LIMIT);
+    return recent
+      .filter((m) => m.pinnedAt !== undefined && m.deletedAt === undefined)
+      .sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0))
+      .map((m) => ({
+        _id: m._id,
+        type: m.type,
+        text: m.text ?? null,
+        senderId: m.senderId,
+        createdAt: m.createdAt,
+        pinnedAt: m.pinnedAt ?? 0,
+      }));
   },
 });
 

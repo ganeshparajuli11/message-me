@@ -1,7 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireParticipant, requireUser } from "./lib/helpers";
-import { TYPING_WINDOW_MS } from "./lib/validation";
 
 /**
  * setTyping — upserts the caller's typingStatus row; the client throttles
@@ -34,8 +33,11 @@ export const setTyping = mutation({
 });
 
 /**
- * Subscription query for the typing indicator: is the *other* participant's
- * typing row fresh (within 3s)? Spec-implied read side of Section 5.
+ * Subscription query for the typing indicator. Returns the other
+ * participant's latest typing timestamp (or null). Freshness is computed
+ * CLIENT-SIDE against a ticking clock (revamp Section 4): Convex queries only
+ * re-run when data changes, so a server-side boolean would stay stale-true
+ * after the last keystroke.
  */
 export const getTyping = query({
   args: { conversationId: v.id("conversations") },
@@ -48,7 +50,8 @@ export const getTyping = query({
         q.eq("conversationId", args.conversationId),
       )
       .collect();
-    const cutoff = Date.now() - TYPING_WINDOW_MS;
-    return rows.some((t) => t.userId !== me._id && t.updatedAt >= cutoff);
+    const others = rows.filter((t) => t.userId !== me._id);
+    if (others.length === 0) return null;
+    return Math.max(...others.map((t) => t.updatedAt));
   },
 });

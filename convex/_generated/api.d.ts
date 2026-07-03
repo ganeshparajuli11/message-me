@@ -10,7 +10,9 @@
 
 import type * as admin from "../admin.js";
 import type * as blocks from "../blocks.js";
+import type * as calls from "../calls.js";
 import type * as conversations from "../conversations.js";
+import type * as friends from "../friends.js";
 import type * as http from "../http.js";
 import type * as lib_helpers from "../lib/helpers.js";
 import type * as lib_validation from "../lib/validation.js";
@@ -28,7 +30,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   blocks: typeof blocks;
+  calls: typeof calls;
   conversations: typeof conversations;
+  friends: typeof friends;
   http: typeof http;
   "lib/helpers": typeof lib_helpers;
   "lib/validation": typeof lib_validation;

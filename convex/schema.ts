@@ -45,9 +45,14 @@ export default defineSchema({
   messages: defineTable({
     conversationId: v.id("conversations"),
     senderId: v.id("users"),
-    type: v.union(v.literal("text"), v.literal("image")),
+    type: v.union(v.literal("text"), v.literal("image"), v.literal("voice")),
     text: v.optional(v.string()),
     imageStorageId: v.optional(v.id("_storage")),
+    // Voice notes (revamp Section 8): record-then-upload, same storage flow
+    // as images. voiceStorageId is a flagged addition — the audio blob needs
+    // its own reference field.
+    voiceStorageId: v.optional(v.id("_storage")),
+    voiceDurationSeconds: v.optional(v.number()),
     status: v.union(
       v.literal("sent"),
       v.literal("delivered"),
@@ -55,6 +60,10 @@ export default defineSchema({
     ),
     editedAt: v.optional(v.number()),
     deletedAt: v.optional(v.number()),
+    // Message pin (revamp Section 5): pin is per-message, visible to both
+    // participants (standard chat behavior), max 3 per conversation.
+    pinnedAt: v.optional(v.number()),
+    pinnedBy: v.optional(v.id("users")),
     createdAt: v.number(),
   })
     .index("by_conversation", ["conversationId"])
@@ -78,6 +87,85 @@ export default defineSchema({
     blockerId: v.id("users"),
     blockedId: v.id("users"),
   }).index("by_blocker", ["blockerId"]),
+
+  friendRequests: defineTable({
+    senderId: v.id("users"),
+    receiverId: v.id("users"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("accepted"),
+      v.literal("declined"),
+    ),
+    createdAt: v.number(),
+    respondedAt: v.optional(v.number()),
+  })
+    .index("by_receiver", ["receiverId"])
+    .index("by_sender", ["senderId"])
+    .index("by_pair", ["senderId", "receiverId"]),
+
+  /**
+   * Friendships are stored NORMALIZED: exactly one row per pair, with
+   * userAId < userBId (sorted by id string, same convention as
+   * conversations.participantIds). Query both indexes to list a user's
+   * friends.
+   */
+  friendships: defineTable({
+    userAId: v.id("users"),
+    userBId: v.id("users"),
+    createdAt: v.number(),
+  })
+    .index("by_userA", ["userAId"])
+    .index("by_userB", ["userBId"])
+    .index("by_pair", ["userAId", "userBId"]),
+
+  /**
+   * "Delete for me" (revamp Section 6): rows here hide a message from one
+   * user only. Separate table (not an array on messages) to keep message
+   * documents small.
+   */
+  messageHiddenFor: defineTable({
+    messageId: v.id("messages"),
+    userId: v.id("users"),
+  })
+    .index("by_message", ["messageId"])
+    .index("by_user", ["userId"]),
+
+  /**
+   * Calls (revamp Section 9). WebRTC carries the actual media peer-to-peer;
+   * these tables are ONLY the signaling channel (SDP offers/answers + ICE).
+   * by_caller/by_callee are flagged index additions: incoming-call
+   * subscription and per-caller rate limiting need them.
+   */
+  calls: defineTable({
+    conversationId: v.id("conversations"),
+    callerId: v.id("users"),
+    calleeId: v.id("users"),
+    type: v.union(v.literal("voice"), v.literal("video")),
+    status: v.union(
+      v.literal("ringing"),
+      v.literal("active"),
+      v.literal("ended"),
+      v.literal("declined"),
+      v.literal("missed"),
+    ),
+    startedAt: v.number(),
+    endedAt: v.optional(v.number()),
+  })
+    .index("by_conversation", ["conversationId"])
+    .index("by_caller", ["callerId"])
+    .index("by_callee", ["calleeId"]),
+
+  callSignals: defineTable({
+    callId: v.id("calls"),
+    fromUserId: v.id("users"),
+    type: v.union(
+      v.literal("offer"),
+      v.literal("answer"),
+      v.literal("ice-candidate"),
+    ),
+    payload: v.string(), // JSON-stringified SDP/ICE data
+    createdAt: v.number(),
+  }).index("by_call", ["callId"]),
 
   reports: defineTable({
     reporterId: v.id("users"),

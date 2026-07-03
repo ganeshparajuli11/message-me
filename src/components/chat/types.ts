@@ -10,7 +10,7 @@ export type Me = {
 
 export type PendingMessage = {
   key: string;
-  type: "text" | "image";
+  type: "text" | "image" | "voice";
   text: string | null;
   imagePreviewUrl: string | null;
   failed: boolean;

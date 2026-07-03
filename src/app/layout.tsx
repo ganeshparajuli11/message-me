@@ -20,7 +20,26 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
       <body className="relative min-h-dvh">
-        <ClerkProvider>
+        <ClerkProvider
+          appearance={{
+            // Ink & Paper theming for Clerk's hosted components (revamp
+            // Section 3) — visual only, no auth/session logic touched.
+            variables: {
+              colorPrimary: "#4a5d45", // moss
+              colorForeground: "#2b2621", // ink
+              colorBackground: "#f7f3ec", // paper
+              colorMutedForeground: "#9c9488", // ash
+              colorMuted: "#efe9de",
+              colorInput: "#efe9de",
+              colorInputForeground: "#2b2621",
+              colorBorder: "#ddd5c6",
+              colorDanger: "#c77b58", // clay
+              fontFamily:
+                '"Public Sans Variable", system-ui, -apple-system, sans-serif',
+              borderRadius: "0.75rem",
+            },
+          }}
+        >
           <ConvexClientProvider>{children}</ConvexClientProvider>
         </ClerkProvider>
       </body>

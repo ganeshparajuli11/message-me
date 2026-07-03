@@ -9,10 +9,14 @@ import {
 } from "@/components/chat/message-bubble";
 import { MessageInput } from "@/components/chat/message-input";
 import type { Me, PendingMessage } from "@/components/chat/types";
+import type { VoiceRecording } from "@/hooks/use-voice-recorder";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Lightbox } from "@/components/ui/lightbox";
+import { Menu, MenuItem } from "@/components/ui/menu";
+import { useNow } from "@/hooks/use-now";
 import { formatLastSeen } from "@/lib/utils";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -22,27 +26,42 @@ import {
   Flag,
   Loader2,
   Pencil,
+  Phone,
+  Pin,
+  PinOff,
   RotateCcw,
   Trash2,
+  Video,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNow } from "@/hooks/use-now";
 
 const ONLINE_WINDOW_MS = 60_000;
+const TYPING_WINDOW_MS = 3_000;
 
 export function ChatWindow({
   conversationId,
   me,
   onBack,
+  onStartCall,
 }: {
   conversationId: Id<"conversations">;
   me: Me;
   onBack: () => void;
+  onStartCall: (type: "voice" | "video") => void;
 }) {
   const conversation = useQuery(api.conversations.getConversation, {
     conversationId,
   });
-  const typing = useQuery(api.typing.getTyping, { conversationId });
+  // Server returns the other participant's latest typing timestamp; freshness
+  // is evaluated against a 1s ticking clock so the indicator CLEARS when they
+  // stop typing (revamp Section 4 — reactive queries alone would stay stale).
+  const typingAt = useQuery(api.typing.getTyping, { conversationId });
+  const pinned = useQuery(api.messages.listPinnedMessages, { conversationId });
+  const nowFast = useNow(1000);
+  const otherIsTyping =
+    typeof typingAt === "number" && nowFast - typingAt < TYPING_WINDOW_MS;
+
   const {
     results: messages,
     status: pageStatus,
@@ -56,13 +75,15 @@ export function ChatWindow({
   const sendMessage = useMutation(api.messages.sendMessage);
   const markRead = useMutation(api.messages.markRead);
   const editMessage = useMutation(api.messages.editMessage);
-  const deleteMessage = useMutation(api.messages.deleteMessage);
+  const deleteForEveryone = useMutation(api.messages.deleteMessageForEveryone);
+  const deleteForMe = useMutation(api.messages.deleteMessageForMe);
+  const pinMessage = useMutation(api.messages.pinMessage);
+  const unpinMessage = useMutation(api.messages.unpinMessage);
   const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
   const blockUser = useMutation(api.blocks.blockUser);
   const unblockUser = useMutation(api.blocks.unblockUser);
   const reportUser = useMutation(api.reports.reportUser);
 
-  const now = useNow();
   const [pending, setPending] = useState<PendingMessage[]>([]);
   const [editing, setEditing] = useState<{
     id: Id<"messages">;
@@ -75,6 +96,8 @@ export function ChatWindow({
   const [reportBusy, setReportBusy] = useState(false);
   const [reportDone, setReportDone] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const newestIdRef = useRef<string | null>(null);
@@ -104,6 +127,24 @@ export function ChatWindow({
     }
   }, [pageStatus, loadMore]);
 
+  function jumpToMessage(id: string) {
+    const el = document.getElementById(`msg-${id}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightId(id);
+      setTimeout(() => setHighlightId(null), 1600);
+    } else if (pageStatus === "CanLoadMore") {
+      // Message not loaded yet — pull in more history, user can tap again.
+      loadMore(100);
+    }
+  }
+
+  function friendly(err: unknown, fallback: string) {
+    return err instanceof ConvexError && typeof err.data === "string"
+      ? err.data
+      : fallback;
+  }
+
   async function handleSendText(text: string) {
     const key = `p${crypto.randomUUID()}`;
     setPending((p) => [
@@ -114,11 +155,7 @@ export function ChatWindow({
       await sendMessage({ conversationId, type: "text", text });
       setPending((p) => p.filter((m) => m.key !== key));
     } catch (err) {
-      setActionError(
-        err instanceof ConvexError && typeof err.data === "string"
-          ? err.data
-          : "Message failed to send",
-      );
+      setActionError(friendly(err, "Message failed to send"));
       setPending((p) =>
         p.map((m) => (m.key === key ? { ...m, failed: true } : m)),
       );
@@ -149,11 +186,37 @@ export function ChatWindow({
       setPending((p) => p.filter((m) => m.key !== key));
       URL.revokeObjectURL(previewUrl);
     } catch (err) {
-      setActionError(
-        err instanceof ConvexError && typeof err.data === "string"
-          ? err.data
-          : "Image failed to send",
+      setActionError(friendly(err, "Image failed to send"));
+      setPending((p) =>
+        p.map((m) => (m.key === key ? { ...m, failed: true } : m)),
       );
+    }
+  }
+
+  async function handleSendVoice(recording: VoiceRecording) {
+    const key = `p${crypto.randomUUID()}`;
+    setPending((p) => [
+      ...p,
+      { key, type: "voice", text: null, imagePreviewUrl: null, failed: false },
+    ]);
+    try {
+      const uploadUrl = await generateUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": recording.mimeType },
+        body: recording.blob,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
+      await sendMessage({
+        conversationId,
+        type: "voice",
+        voiceStorageId: storageId,
+        voiceDurationSeconds: recording.durationSeconds,
+      });
+      setPending((p) => p.filter((m) => m.key !== key));
+    } catch (err) {
+      setActionError(friendly(err, "Voice note failed to send"));
       setPending((p) =>
         p.map((m) => (m.key === key ? { ...m, failed: true } : m)),
       );
@@ -179,11 +242,7 @@ export function ChatWindow({
       setReportDone(true);
       setReportReason("");
     } catch (err) {
-      setActionError(
-        err instanceof ConvexError && typeof err.data === "string"
-          ? err.data
-          : "Could not send the report",
-      );
+      setActionError(friendly(err, "Could not send the report"));
     } finally {
       setReportBusy(false);
     }
@@ -199,7 +258,8 @@ export function ChatWindow({
 
   const other = conversation.other;
   const online =
-    other.lastActiveAt !== null && now - other.lastActiveAt < ONLINE_WINDOW_MS;
+    other.lastActiveAt !== null &&
+    nowFast - other.lastActiveAt < ONLINE_WINDOW_MS;
   const blocked = conversation.iBlockedThem || conversation.theyBlockedMe;
 
   // Newest-first from the server; render oldest → newest.
@@ -218,17 +278,23 @@ export function ChatWindow({
       type: m.type,
       text: m.text,
       imageUrl: m.imageUrl,
+      voiceUrl: m.voiceUrl,
+      voiceDurationSeconds: m.voiceDurationSeconds,
       deleted: m.deleted,
       editedAt: m.editedAt,
       createdAt: m.createdAt,
+      pinned: m.pinnedAt !== null,
       tick,
     };
   };
 
+  const act = (fn: () => Promise<unknown>, fallback: string) => () =>
+    void fn().catch((err) => setActionError(friendly(err, fallback)));
+
   return (
     <>
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-line px-4 py-3">
+      <header className="flex items-center gap-3 border-b border-line bg-surface/40 px-4 py-3">
         <Button
           variant="ghost"
           size="icon"
@@ -240,25 +306,51 @@ export function ChatWindow({
         </Button>
         <Avatar username={other.username} online={online} />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-display font-semibold">{other.username}</p>
+          <p className="truncate font-display text-base font-semibold leading-tight">
+            {other.username}
+          </p>
           <p className="text-xs text-ash">
-            {typing
-              ? "typing…"
-              : online
-                ? "online"
-                : formatLastSeen(other.lastActiveAt)}
+            {otherIsTyping ? (
+              <span className="text-moss">typing…</span>
+            ) : online ? (
+              "online"
+            ) : (
+              formatLastSeen(other.lastActiveAt)
+            )}
           </p>
         </div>
         <Button
           variant="ghost"
           size="icon"
+          aria-label="Voice call"
+          title="Voice call"
+          disabled={blocked}
+          onClick={() => onStartCall("voice")}
+        >
+          <Phone className="h-4 w-4 text-moss" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Video call"
+          title="Video call"
+          disabled={blocked}
+          onClick={() => onStartCall("video")}
+        >
+          <Video className="h-4 w-4 text-moss" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           aria-label={conversation.iBlockedThem ? "Unblock user" : "Block user"}
           title={conversation.iBlockedThem ? "Unblock" : "Block"}
-          onClick={() =>
-            void (conversation.iBlockedThem
-              ? unblockUser({ userId: other._id })
-              : blockUser({ userId: other._id }))
-          }
+          onClick={act(
+            () =>
+              conversation.iBlockedThem
+                ? unblockUser({ userId: other._id })
+                : blockUser({ userId: other._id }),
+            "Could not update block",
+          )}
         >
           <Ban
             className={
@@ -280,11 +372,47 @@ export function ChatWindow({
         </Button>
       </header>
 
-      {/* Messages */}
+      {/* Pinned bar (revamp Section 5) */}
+      {pinned !== undefined && pinned.length > 0 && (
+        <div className="flex items-center gap-2 overflow-x-auto border-b border-line bg-surface/60 px-3 py-2">
+          <Pin className="h-3.5 w-3.5 shrink-0 text-clay" />
+          {pinned.map((p) => (
+            <button
+              key={p._id}
+              onClick={() => jumpToMessage(p._id)}
+              className="flex max-w-56 shrink-0 items-center gap-1.5 rounded-full border border-line bg-bg px-3 py-1 text-xs hover:border-clay cursor-pointer"
+              title="Jump to message"
+            >
+              <span className="truncate">
+                {p.type === "image"
+                  ? "📷 Photo"
+                  : p.type === "voice"
+                    ? "🎤 Voice note"
+                    : p.text}
+              </span>
+              <span
+                role="button"
+                aria-label="Unpin"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void unpinMessage({ messageId: p._id }).catch(() => {});
+                }}
+                className="rounded-full p-0.5 text-ash hover:text-clay"
+              >
+                <X className="h-3 w-3" />
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Messages — min-h-0 keeps this the ONLY growing region so the input
+          bar below can never be pushed out of the viewport (revamp Section 3
+          responsive bug fix). */}
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 space-y-2 overflow-y-auto px-4 py-4"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-4"
       >
         {pageStatus === "LoadingMore" && (
           <div className="flex justify-center py-2">
@@ -306,43 +434,87 @@ export function ChatWindow({
 
         {ordered.map((m) => {
           const mine = m.senderId === me._id;
+          const isPinned = m.pinnedAt !== null;
           return (
-            <MessageBubble key={m._id} message={toBubble(m)}>
-              {mine && !m.deleted ? (
-                <span className="flex gap-1">
-                  {m.type === "text" && (
-                    <button
-                      aria-label="Edit message"
-                      className="rounded p-1 text-ash hover:text-fg cursor-pointer"
-                      onClick={() =>
-                        setEditing({ id: m._id, text: m.text ?? "" })
-                      }
+            <div
+              key={m._id}
+              className={
+                highlightId === m._id
+                  ? "rounded-2xl ring-2 ring-clay/60 transition-shadow"
+                  : undefined
+              }
+            >
+              <MessageBubble
+                message={toBubble(m)}
+                domId={`msg-${m._id}`}
+                onImageClick={
+                  m.imageUrl ? () => setLightboxUrl(m.imageUrl) : undefined
+                }
+              >
+                {!m.deleted && (
+                  <Menu align={mine ? "end" : "start"}>
+                    <MenuItem
+                      onSelect={act(
+                        () =>
+                          isPinned
+                            ? unpinMessage({ messageId: m._id })
+                            : pinMessage({ messageId: m._id }),
+                        "Could not update pin",
+                      )}
                     >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                  <button
-                    aria-label="Delete message"
-                    className="rounded p-1 text-ash hover:text-clay cursor-pointer"
-                    onClick={() => void deleteMessage({ messageId: m._id })}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </span>
-              ) : !mine && !m.deleted && m.type === "text" ? (
-                <button
-                  aria-label="Report this message"
-                  title="Report this message"
-                  className="rounded p-1 text-ash hover:text-clay cursor-pointer"
-                  onClick={() => {
-                    setReporting({ snapshot: m.text });
-                    setReportDone(false);
-                  }}
-                >
-                  <Flag className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-            </MessageBubble>
+                      {isPinned ? (
+                        <>
+                          <PinOff className="h-3.5 w-3.5" /> Unpin
+                        </>
+                      ) : (
+                        <>
+                          <Pin className="h-3.5 w-3.5" /> Pin
+                        </>
+                      )}
+                    </MenuItem>
+                    {mine && m.type === "text" && (
+                      <MenuItem
+                        onSelect={() =>
+                          setEditing({ id: m._id, text: m.text ?? "" })
+                        }
+                      >
+                        <Pencil className="h-3.5 w-3.5" /> Edit
+                      </MenuItem>
+                    )}
+                    {!mine && m.type === "text" && (
+                      <MenuItem
+                        onSelect={() => {
+                          setReporting({ snapshot: m.text });
+                          setReportDone(false);
+                        }}
+                      >
+                        <Flag className="h-3.5 w-3.5" /> Report
+                      </MenuItem>
+                    )}
+                    <MenuItem
+                      destructive
+                      onSelect={act(
+                        () => deleteForMe({ messageId: m._id }),
+                        "Could not delete",
+                      )}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Delete for me
+                    </MenuItem>
+                    {mine && (
+                      <MenuItem
+                        destructive
+                        onSelect={act(
+                          () => deleteForEveryone({ messageId: m._id }),
+                          "Could not delete",
+                        )}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete for everyone
+                      </MenuItem>
+                    )}
+                  </Menu>
+                )}
+              </MessageBubble>
+            </div>
           );
         })}
 
@@ -386,7 +558,7 @@ export function ChatWindow({
           </MessageBubble>
         ))}
 
-        {typing === true && <TypingIndicator />}
+        {otherIsTyping && <TypingIndicator />}
       </div>
 
       {actionError && (
@@ -407,6 +579,7 @@ export function ChatWindow({
         disabled={blocked}
         onSendText={(t) => void handleSendText(t)}
         onSendImage={(f) => void handleSendImage(f)}
+        onSendVoice={(r) => void handleSendVoice(r)}
       />
 
       {/* Edit dialog */}
@@ -429,7 +602,9 @@ export function ChatWindow({
                 void editMessage({
                   messageId: editing.id,
                   newText: editing.text,
-                });
+                }).catch((err) =>
+                  setActionError(friendly(err, "Could not edit the message")),
+                );
                 setEditing(null);
               }}
             >
@@ -489,6 +664,10 @@ export function ChatWindow({
           </div>
         )}
       </Dialog>
+
+      {lightboxUrl && (
+        <Lightbox imageUrl={lightboxUrl} onClose={() => setLightboxUrl(null)} />
+      )}
     </>
   );
 }

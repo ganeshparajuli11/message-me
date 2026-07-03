@@ -65,6 +65,31 @@ export async function isBlockedEitherDirection(
   );
 }
 
+/**
+ * Canonical sorted pair for friendships rows (userAId < userBId by id string,
+ * matching the conversations.participantIds convention).
+ */
+export function sortedPair(
+  a: Id<"users">,
+  b: Id<"users">,
+): [Id<"users">, Id<"users">] {
+  return a < b ? [a, b] : [b, a];
+}
+
+/** True if the two users have a friendships row. Indexed via by_pair. */
+export async function areFriends(
+  ctx: QueryCtx | MutationCtx,
+  a: Id<"users">,
+  b: Id<"users">,
+): Promise<boolean> {
+  const [userAId, userBId] = sortedPair(a, b);
+  const row = await ctx.db
+    .query("friendships")
+    .withIndex("by_pair", (q) => q.eq("userAId", userAId).eq("userBId", userBId))
+    .first();
+  return row !== null;
+}
+
 /** Throws unless the user is a participant of the conversation. */
 export async function requireParticipant(
   ctx: QueryCtx | MutationCtx,
