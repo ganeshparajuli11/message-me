@@ -27,6 +27,7 @@ import {
   Loader2,
   Pencil,
   Phone,
+  PhoneMissed,
   Pin,
   PinOff,
   RotateCcw,
@@ -58,6 +59,9 @@ export function ChatWindow({
   // stop typing (revamp Section 4 — reactive queries alone would stay stale).
   const typingAt = useQuery(api.typing.getTyping, { conversationId });
   const pinned = useQuery(api.messages.listPinnedMessages, { conversationId });
+  // Call history interleaved into the timeline (polish Section 2) — read
+  // straight from the calls table, merged client-side; no duplicated data.
+  const callEvents = useQuery(api.calls.listCallEvents, { conversationId });
   const nowFast = useNow(1000);
   const otherIsTyping =
     typeof typingAt === "number" && nowFast - typingAt < TYPING_WINDOW_MS;
@@ -97,6 +101,10 @@ export function ChatWindow({
   const [reportDone, setReportDone] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    id: Id<"messages">;
+    scope: "me" | "everyone";
+  } | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -265,6 +273,20 @@ export function ChatWindow({
   // Newest-first from the server; render oldest → newest.
   const ordered = [...messages].reverse();
 
+  // Interleave call events with messages by timestamp. Only show events
+  // within the loaded message window (all of them once fully paginated).
+  const oldestLoadedAt = ordered[0]?.createdAt ?? 0;
+  const visibleCallEvents = (callEvents ?? []).filter(
+    (c) => pageStatus === "Exhausted" || c.startedAt >= oldestLoadedAt,
+  );
+  type TimelineRow =
+    | { kind: "message"; ts: number; message: (typeof ordered)[number] }
+    | { kind: "call"; ts: number; call: (typeof visibleCallEvents)[number] };
+  const timeline: TimelineRow[] = [
+    ...ordered.map((m) => ({ kind: "message" as const, ts: m.createdAt, message: m })),
+    ...visibleCallEvents.map((c) => ({ kind: "call" as const, ts: c.startedAt, call: c })),
+  ].sort((a, b) => a.ts - b.ts);
+
   const toBubble = (m: (typeof messages)[number]): BubbleMessage => {
     const mine = m.senderId === me._id;
     let tick: BubbleMessage["tick"] = null;
@@ -419,12 +441,12 @@ export function ChatWindow({
             <Loader2 className="h-4 w-4 animate-spin text-ash" />
           </div>
         )}
-        {pageStatus === "Exhausted" && ordered.length > 0 && (
+        {pageStatus === "Exhausted" && timeline.length > 0 && (
           <p className="pb-2 text-center text-[11px] text-ash">
             This is the beginning of your conversation
           </p>
         )}
-        {ordered.length === 0 && pending.length === 0 && (
+        {timeline.length === 0 && pending.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-ash">
               No messages yet — write the first note.
@@ -432,7 +454,11 @@ export function ChatWindow({
           </div>
         )}
 
-        {ordered.map((m) => {
+        {timeline.map((row) => {
+          if (row.kind === "call") {
+            return <CallLogRow key={row.call._id} call={row.call} />;
+          }
+          const m = row.message;
           const mine = m.senderId === me._id;
           const isPinned = m.pinnedAt !== null;
           return (
@@ -493,20 +519,18 @@ export function ChatWindow({
                     )}
                     <MenuItem
                       destructive
-                      onSelect={act(
-                        () => deleteForMe({ messageId: m._id }),
-                        "Could not delete",
-                      )}
+                      onSelect={() =>
+                        setConfirmDelete({ id: m._id, scope: "me" })
+                      }
                     >
                       <Trash2 className="h-3.5 w-3.5" /> Delete for me
                     </MenuItem>
                     {mine && (
                       <MenuItem
                         destructive
-                        onSelect={act(
-                          () => deleteForEveryone({ messageId: m._id }),
-                          "Could not delete",
-                        )}
+                        onSelect={() =>
+                          setConfirmDelete({ id: m._id, scope: "everyone" })
+                        }
                       >
                         <Trash2 className="h-3.5 w-3.5" /> Delete for everyone
                       </MenuItem>
@@ -665,9 +689,113 @@ export function ChatWindow({
         )}
       </Dialog>
 
+      {/* Delete confirmation (polish Section 5) */}
+      <Dialog
+        open={confirmDelete !== null}
+        onClose={() => setConfirmDelete(null)}
+        title={
+          confirmDelete?.scope === "everyone"
+            ? "Delete for everyone?"
+            : "Delete for me?"
+        }
+      >
+        {confirmDelete && (
+          <div className="space-y-4">
+            <p className="text-sm text-ash">
+              {confirmDelete.scope === "everyone"
+                ? `This message will be removed for both you and ${other.username}. Everyone will see "This message was deleted".`
+                : "This message will disappear from your view only — the other person will still see it. This can't be undone."}
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setConfirmDelete(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const { id, scope } = confirmDelete;
+                  setConfirmDelete(null);
+                  void (
+                    scope === "everyone"
+                      ? deleteForEveryone({ messageId: id })
+                      : deleteForMe({ messageId: id })
+                  ).catch((err) =>
+                    setActionError(friendly(err, "Could not delete")),
+                  );
+                }}
+              >
+                <Trash2 className="h-4 w-4" /> Delete
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
       {lightboxUrl && (
         <Lightbox imageUrl={lightboxUrl} onClose={() => setLightboxUrl(null)} />
       )}
     </>
   );
+}
+
+/** Inline call-history row (polish Section 2) — Messenger-style chip. */
+function CallLogRow({
+  call,
+}: {
+  call: {
+    _id: string;
+    type: "voice" | "video";
+    status: "ringing" | "active" | "ended" | "declined" | "missed";
+    mine: boolean;
+    startedAt: number;
+    durationSeconds: number | null;
+  };
+}) {
+  const Icon =
+    call.status === "missed" || call.status === "declined"
+      ? PhoneMissed
+      : call.type === "video"
+        ? Video
+        : Phone;
+  const label =
+    call.status === "ringing"
+      ? "Calling…"
+      : call.status === "active"
+        ? "Call in progress…"
+        : call.status === "declined"
+          ? "Call declined"
+          : call.status === "missed"
+            ? call.mine
+              ? "No answer"
+              : "Missed call"
+            : call.durationSeconds !== null
+              ? `Call ended · ${formatDurationLabel(call.durationSeconds)}`
+              : "Call ended";
+  const alarming = call.status === "missed" || call.status === "declined";
+  return (
+    <div className="flex justify-center py-1">
+      <span
+        className={
+          alarming
+            ? "flex items-center gap-2 rounded-full border border-clay/30 bg-clay/10 px-3 py-1.5 text-xs text-clay"
+            : "flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-ash"
+        }
+      >
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+        <span className="opacity-70">
+          {new Date(call.startedAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function formatDurationLabel(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const sec = totalSeconds % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
 }

@@ -241,6 +241,88 @@ export const getCall = query({
   },
 });
 
+/**
+ * My live call (active, or fresh-ringing where I'm the caller) — drives the
+ * persistent "call in progress" bar when the full call screen isn't open
+ * (polish Section 1). Survives page reloads because it reads server state.
+ */
+export const myActiveCall = query({
+  args: {},
+  handler: async (ctx) => {
+    const me = await requireUser(ctx);
+    const [asCaller, asCallee] = await Promise.all([
+      ctx.db
+        .query("calls")
+        .withIndex("by_caller", (q) => q.eq("callerId", me._id))
+        .order("desc")
+        .take(3),
+      ctx.db
+        .query("calls")
+        .withIndex("by_callee", (q) => q.eq("calleeId", me._id))
+        .order("desc")
+        .take(3),
+    ]);
+    const now = Date.now();
+    const live = [...asCaller, ...asCallee]
+      .filter(
+        (c) =>
+          c.status === "active" ||
+          (c.status === "ringing" &&
+            c.callerId === me._id &&
+            c.startedAt > now - RING_TIMEOUT_MS),
+      )
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    if (live === undefined) return null;
+    const otherId = live.callerId === me._id ? live.calleeId : live.callerId;
+    const other = await ctx.db.get(otherId);
+    if (other === null) return null;
+    return {
+      _id: live._id,
+      status: live.status,
+      type: live.type,
+      startedAt: live.startedAt,
+      other: publicUser(other),
+    };
+  },
+});
+
+/**
+ * Call events for the conversation timeline (polish Section 2). Read
+ * directly from `calls` and merged with messages client-side by timestamp —
+ * no data duplicated into the messages table. Duration shown is
+ * endedAt-startedAt (includes ring time; we don't store an acceptedAt —
+ * flagged approximation).
+ */
+export const listCallEvents = query({
+  args: { conversationId: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const me = await requireUser(ctx);
+    await requireParticipant(ctx, args.conversationId, me._id);
+    const recent = await ctx.db
+      .query("calls")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .order("desc")
+      .take(50);
+    const now = Date.now();
+    return recent.map((c) => ({
+      _id: c._id,
+      type: c.type,
+      status:
+        c.status === "ringing" && c.startedAt <= now - RING_TIMEOUT_MS
+          ? ("missed" as const) // stale ring (e.g. tab closed) renders as missed
+          : c.status,
+      mine: c.callerId === me._id,
+      startedAt: c.startedAt,
+      durationSeconds:
+        c.endedAt !== undefined
+          ? Math.max(0, Math.round((c.endedAt - c.startedAt) / 1000))
+          : null,
+    }));
+  },
+});
+
 /** Newest fresh ringing call for me — drives the incoming-call banner. */
 export const myIncomingCall = query({
   args: {},

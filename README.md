@@ -156,6 +156,44 @@ Implements `inkwell-revamp-prompt.md` Sections 2–7:
    chat header, friends, calls) now render the stored photo, falling back to
    initials.
 
+## Final polish pass (inkwell-final-polish-prompt.md)
+
+1. **Ongoing-call bar** — a live call now surfaces a persistent pill (name +
+   elapsed + end button) whenever the full call screen isn't open, driven by
+   a server-side `myActiveCall` subscription, so it survives page reloads.
+   Tapping it returns to the call; the caller re-offers and the other side
+   rebuilds its peer connection (renegotiation-lite).
+2. **Call log in the timeline** — Messenger-style chips (Calling… / Call
+   ended · duration / Missed / Declined) interleaved with messages by
+   timestamp, read directly from the `calls` table client-side (no data
+   duplicated into `messages`). Flagged approximation: duration is
+   endedAt−startedAt (includes ring time; no acceptedAt field).
+3. **Camera-off tiles** — peers exchange {cameraOff, sharing} over a WebRTC
+   data channel (no schema change). Camera-off shows the avatar + icon +
+   name tile on both the remote stage and the local self-view.
+4. **Presenting indicators** — "You're presenting" pill + clay ring on the
+   local tile for the presenter; "X is sharing their screen" pill on the
+   remote side.
+5. **Delete confirmation** — design-system dialog before delete-for-me /
+   delete-for-everyone, scope-specific copy, red destructive button,
+   Cancel/Esc/outside-click close.
+6. **Encryption** — Option A (infrastructure encryption at rest) per the
+   prompt's recommendation; see `deploy/encryption-at-rest.md`. Profile
+   pictures exempt per scope clarification. Option B (app-level media
+   encryption) is documented there as a separate dedicated task if ever
+   contractually required.
+7. **Image compression** — images over 5 MB are downscaled/re-encoded
+   client-side (canvas, progressive quality/dimension steps) with an
+   "Optimizing image…" state; the hard error only fires if compression
+   can't get under the cap. Animated GIFs are exempt (canvas would freeze
+   them) and fall back to the size error.
+8. **Profile picture compression** — investigated and SKIPPED per the
+   prompt: avatars upload through Clerk's own account modal; this app never
+   owns that pipeline.
+9. **Call-screen side gap** — camera video now renders object-cover
+   (full-bleed stage); screen shares render object-contain so content isn't
+   cropped.
+
 ## Architecture Notes
 
 - `convex/schema.ts` stores app profile rows keyed by Clerk-backed

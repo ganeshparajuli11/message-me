@@ -9,6 +9,7 @@ import {
   MESSAGE_MAX_LENGTH,
 } from "../../../convex/lib/validation";
 import { formatDuration } from "@/components/chat/message-bubble";
+import { compressImage } from "@/lib/compress-image";
 import {
   useVoiceRecorder,
   type VoiceRecording,
@@ -32,6 +33,7 @@ export function MessageInput({
 }) {
   const [text, setText] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
+  const [compressing, setCompressing] = useState(false);
   // Voice UX decision (flagged): tap-to-start / tap-to-stop, not
   // hold-to-record — simpler and more reliable across devices.
   const recorder = useVoiceRecorder();
@@ -56,18 +58,29 @@ export function MessageInput({
     onSendText(trimmed);
   }
 
-  function handleFile(file: File | undefined) {
+  // Polish Section 7: compress client-side toward the 5 MB cap instead of
+  // rejecting outright — the error is the rare fallback, not the UX.
+  async function handleFile(file: File | undefined) {
     setImageError(null);
     if (!file) return;
     if (!IMAGE_ALLOWED_TYPES.includes(file.type)) {
       setImageError("Only JPEG, PNG, GIF or WebP images");
       return;
     }
-    if (file.size > IMAGE_MAX_BYTES) {
-      setImageError("Image too large (max 5 MB)");
-      return;
+    try {
+      setCompressing(true);
+      const ready =
+        file.size > IMAGE_MAX_BYTES
+          ? await compressImage(file, IMAGE_MAX_BYTES)
+          : file;
+      onSendImage(ready);
+    } catch (err) {
+      setImageError(
+        err instanceof Error ? err.message : "Could not process the image",
+      );
+    } finally {
+      setCompressing(false);
     }
-    onSendImage(file);
   }
 
   async function finishRecording() {
@@ -111,6 +124,9 @@ export function MessageInput({
   return (
     <div className="border-t border-line bg-surface/50 p-3">
       {imageError && <p className="mb-2 text-xs text-clay">{imageError}</p>}
+      {compressing && (
+        <p className="mb-2 text-xs text-ash">Optimizing image…</p>
+      )}
       {recorder.error && (
         <p className="mb-2 text-xs text-clay">{recorder.error}</p>
       )}
@@ -121,7 +137,7 @@ export function MessageInput({
           accept={IMAGE_ALLOWED_TYPES.join(",")}
           className="hidden"
           onChange={(e) => {
-            handleFile(e.target.files?.[0]);
+            void handleFile(e.target.files?.[0]);
             e.target.value = "";
           }}
         />
@@ -129,7 +145,7 @@ export function MessageInput({
           variant="ghost"
           size="icon"
           aria-label="Attach image"
-          disabled={disabled}
+          disabled={disabled || compressing}
           onClick={() => fileRef.current?.click()}
         >
           <ImagePlus className="h-5 w-5 text-ash" />
