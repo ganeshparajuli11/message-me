@@ -194,6 +194,8 @@ function CallPanel({
     cameraOff: false,
     sharing: false,
   });
+  const [localPortrait, setLocalPortrait] = useState(false);
+  const [remotePortrait, setRemotePortrait] = useState(false);
   const [connected, setConnected] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -255,6 +257,11 @@ function CallPanel({
         }
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          localVideoRef.current.onloadedmetadata = () => {
+            const el = localVideoRef.current;
+            if (!el) return;
+            setLocalPortrait(el.videoHeight > el.videoWidth);
+          };
         }
 
         // Peer-state sync channel (camera off / presenting) — polish 3+4.
@@ -271,6 +278,11 @@ function CallPanel({
             remoteVideoRef.current.srcObject !== remote
           ) {
             remoteVideoRef.current.srcObject = remote;
+            remoteVideoRef.current.onloadedmetadata = () => {
+              const el = remoteVideoRef.current;
+              if (!el) return;
+              setRemotePortrait(el.videoHeight > el.videoWidth);
+            };
             void remoteVideoRef.current.play().catch(() => {});
           }
           if (
@@ -343,6 +355,8 @@ function CallPanel({
       setConnected(false);
       setSharing(false);
       setCameraOff(false);
+      setLocalPortrait(false);
+      setRemotePortrait(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callLoaded, callId, epoch]);
@@ -537,15 +551,19 @@ function CallPanel({
 
       {/* Stage — full-bleed width (polish Section 9): camera video uses
           object-cover (no side gaps); screen shares use object-contain. */}
-      <div className="relative min-h-0 w-full flex-1">
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden bg-ink">
         {isVideo ? (
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
             className={cn(
-              "h-full w-full bg-ink",
-              remoteState.sharing ? "object-contain" : "object-cover",
+              "max-h-full max-w-full bg-ink",
+              remoteState.sharing
+                ? "h-full w-full object-contain"
+                : remotePortrait
+                  ? "h-full w-auto object-contain"
+                  : "h-full w-full object-cover",
             )}
           />
         ) : (
@@ -613,13 +631,19 @@ function CallPanel({
               playsInline
               muted
               className={cn(
-                "aspect-video w-full bg-ink object-cover",
+                "w-full bg-ink object-cover",
+                localPortrait ? "aspect-[9/16]" : "aspect-video",
                 !sharing && "-scale-x-100",
                 cameraOff && !sharing && "hidden",
               )}
             />
             {cameraOff && !sharing && (
-              <div className="flex aspect-video w-full flex-col items-center justify-center gap-1 bg-surface-2/20">
+              <div
+                className={cn(
+                  "flex w-full flex-col items-center justify-center gap-1 bg-surface-2/20",
+                  localPortrait ? "aspect-[9/16]" : "aspect-video",
+                )}
+              >
                 <Avatar username={me.username} className="scale-75" />
                 <span className="flex items-center gap-1 text-[10px] text-paper/80">
                   <VideoOff className="h-3 w-3" /> You

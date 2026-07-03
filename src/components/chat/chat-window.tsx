@@ -777,12 +777,12 @@ function CallLogRow({
       <span
         className={
           alarming
-            ? "flex items-center gap-2 rounded-full border border-clay/30 bg-clay/10 px-3 py-1.5 text-xs text-clay"
-            : "flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-ash"
+            ? "flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-clay/30 bg-clay/10 px-3 py-1.5 text-xs text-clay sm:max-w-full"
+            : "flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-ash sm:max-w-full"
         }
       >
         <Icon className="h-3.5 w-3.5" />
-        {label}
+        <span className="truncate">{label}</span>
         <span className="opacity-70">
           {new Date(call.startedAt).toLocaleTimeString([], {
             hour: "2-digit",
