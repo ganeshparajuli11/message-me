@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import type { UserIdentity } from "convex/server";
 import { mutation, query } from "./_generated/server";
 import { publicUser, requireUser } from "./lib/helpers";
+import { validateUsernameFormat } from "./lib/validation";
 
 function normalizeUsernameCandidate(input: string): string {
   const cleaned = input
@@ -153,6 +154,54 @@ export const heartbeat = mutation({
       }
     }
     await ctx.db.patch(user._id, patch);
+  },
+});
+
+/**
+ * Sync Clerk-managed profile fields to the app profile row.
+ *
+ * Username remains an app-level unique field (used across friends/search/chat),
+ * so we mirror Clerk username here when valid and available.
+ */
+export const syncProfileFromClerk = mutation({
+  args: {
+    username: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const user = await requireUser(ctx);
+
+    const patch: {
+      username?: string;
+      usernameLower?: string;
+    } = {};
+
+    if (typeof args.username === "string" && args.username.trim().length > 0) {
+      const normalized = normalizeUsernameCandidate(args.username);
+      const format = validateUsernameFormat(normalized);
+      if (!format.valid) {
+        return { updated: false, reason: "invalid_username" as const };
+      }
+
+      const usernameLower = normalized.toLowerCase();
+      if (usernameLower !== user.usernameLower) {
+        const existing = await ctx.db
+          .query("users")
+          .withIndex("by_usernameLower", (q) => q.eq("usernameLower", usernameLower))
+          .first();
+        if (existing !== null && existing._id !== user._id) {
+          return { updated: false, reason: "username_taken" as const };
+        }
+        patch.username = normalized;
+        patch.usernameLower = usernameLower;
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await ctx.db.patch(user._id, patch);
+      return { updated: true as const };
+    }
+
+    return { updated: false, reason: "no_change" as const };
   },
 });
 

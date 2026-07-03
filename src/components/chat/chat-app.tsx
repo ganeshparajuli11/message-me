@@ -6,16 +6,17 @@ import { CallOverlay } from "@/components/chat/call-overlay";
 import { ChatWindow } from "@/components/chat/chat-window";
 import { ConversationList } from "@/components/chat/conversation-list";
 import type { Me } from "@/components/chat/types";
+import { ProfilePhotoUploader } from "@/components/auth/profile-photo-uploader";
 import { FindFriendsDialog } from "@/components/friends/find-friends-dialog";
 import { FriendsPanel } from "@/components/friends/friends-panel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useUser } from "@clerk/nextjs";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { MessageSquare, Search, Shield, Users } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * App shell (revamp Sections 2 + 3).
@@ -25,7 +26,9 @@ import { useEffect, useState } from "react";
  * bug on small laptop screens — a flex overflow issue, not a sizing issue).
  */
 export function ChatApp({ me }: { me: Me }) {
+  const { user: clerkUser } = useUser();
   const heartbeat = useMutation(api.users.heartbeat);
+  const syncProfileFromClerk = useMutation(api.users.syncProfileFromClerk);
   const incoming = useQuery(api.friends.listFriendRequests, {
     direction: "incoming",
   });
@@ -59,10 +62,22 @@ export function ChatApp({ me }: { me: Me }) {
     return () => clearInterval(t);
   }, [heartbeat]);
 
+  const lastSyncedUsernameRef = useRef<string | null>(null);
+  useEffect(() => {
+    const username = clerkUser?.username?.trim();
+    if (!username) return;
+    if (lastSyncedUsernameRef.current === username) return;
+    lastSyncedUsernameRef.current = username;
+    void syncProfileFromClerk({ username }).catch(() => {
+      // Allow retry on next render/update if this request failed.
+      lastSyncedUsernameRef.current = null;
+    });
+  }, [clerkUser?.username, syncProfileFromClerk]);
+
   const requestCount = incoming?.length ?? 0;
 
   return (
-    <main className="relative z-10 mx-auto flex h-dvh max-w-6xl overflow-hidden">
+    <main className="relative z-10 flex h-dvh w-full overflow-hidden">
       {/* Sidebar */}
       <aside
         className={cn(
@@ -87,6 +102,7 @@ export function ChatApp({ me }: { me: Me }) {
               </Button>
             </Link>
           )}
+          <ProfilePhotoUploader username={me.username} />
           <UserButton />
         </header>
 
